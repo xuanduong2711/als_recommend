@@ -1,0 +1,135 @@
+{% extends "_layout.html" %}
+
+{% block title %}Trang chủ - BookStore{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="row search-container">
+        <div class="col-md-12">
+            <div class="input-group mb-3">
+                <input type="text" class="form-control" placeholder="Tìm kiếm sách, tác giả..." id="searchInput">
+                <div class="input-group-append">
+                    <button class="btn btn-outline-secondary" type="button" id="searchButton">
+                        <i class="fas fa-search"></i> Tìm kiếm
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row recommendation-container">
+        <div class="col-md-8 mx-auto">
+            <h4 class="text-center mb-4">Đề xuất sách dựa trên User ID</h4>
+            <form action="/recommend/hybrid_books" method="post" id="recommendForm">
+                <div class="input-group mb-3">
+                    <input type="number" name="user_id" id="userIdInput" class="form-control" placeholder="Nhập User ID..." required>
+                    <div class="input-group-append">
+                        <button class="btn btn-primary" type="submit" id="recommendButton">
+                            <i class="fas fa-lightbulb"></i> Đề xuất
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="mt-5" id="popularBooks">
+        <h2 class="text-center mb-4">Sách Bán Chạy</h2>
+        <div class="row mt-4" id="popularBooksContainer">
+            <div class="col-12 text-center">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="sr-only">Loading...</span>
+                </div>
+                <p>Đang tải sách bán chạy...</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+
+{% block scripts %}
+<script>
+    // Function to fetch popular books from API
+    function fetchPopularBooks() {
+        fetch('/recommend/popular_books?num=9')
+            .then(response => response.json())
+            .then(data => {
+                displayPopularBooks(data.books);
+            })
+            .catch(error => {
+                console.error('Error fetching popular books:', error);
+                document.getElementById('popularBooksContainer').innerHTML =
+                    '<div class="col-12 text-center">Không thể tải sách. Vui lòng thử lại sau.</div>';
+            });
+    }
+
+    // Function to display popular books
+    function displayPopularBooks(books) {
+        const container = document.getElementById('popularBooksContainer');
+        container.innerHTML = ''; // Clear loading spinner
+        
+        books.forEach(book => {
+            const bookCard = document.createElement('div');
+            bookCard.className = 'col-md-4 mb-4';
+            const imagePath = book.image_path ? 
+                (book.image_path.startsWith('http') ? book.image_path : `/static/image/${book.image_path}`) : 
+                '/static/image/placeholder.jpg';
+            
+            bookCard.innerHTML = `
+                <div class="card h-100">
+                    <img src="${imagePath}" class="card-img-top" alt="${book.book_title || 'Bìa sách'}"
+                         onerror="this.src='/static/image/placeholder.jpg'" style="height: 200px; object-fit: contain;">
+                    <div class="card-body">
+                        <h5 class="card-title">${book.book_title || 'Unknown Book'}</h5>
+                        <p class="card-text">
+                            <strong>Tác giả:</strong> ${book.author || 'N/A'}<br>
+                            <strong>Giá:</strong> ${book.price || 'N/A'} VNĐ<br>
+                            <strong>Đánh giá:</strong> ${book.avg_star || '0'} (${book.num_rating || '0'} đánh giá)<br>
+                            <strong>Thể loại:</strong> ${book.genre || 'N/A'}
+                        </p>
+                    </div>
+                    <div class="card-footer">
+                        <button class="btn btn-primary btn-sm">Thêm vào giỏ</button>
+                    </div>
+                </div>`;
+            container.appendChild(bookCard);
+        });
+    }
+
+    // Load popular books when the page loads
+    document.addEventListener('DOMContentLoaded', function() {
+        fetchPopularBooks();
+
+        // Handle search functionality
+        function performSearch() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (query) {
+                window.location.href = `/search?query=${encodeURIComponent(query)}`;
+            }
+        }
+        
+        // Search button click
+        document.getElementById('searchButton').addEventListener('click', performSearch);
+        
+        // Enter key press in search input
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                performSearch();
+            }
+        });
+
+        // Handle recommendation form submission
+        document.getElementById('recommendForm').addEventListener('submit', function(event) {
+            const userId = document.getElementById('userIdInput').value;
+            if (!userId) {
+                alert('Vui lòng nhập User ID');
+                event.preventDefault(); // Ngăn chặn submit nếu chưa nhập ID
+                return;
+            }
+            // Không cần fetch, vì form đã có action="POST"
+            // Đoạn code này chỉ để validation
+        });
+    });
+</script>
+{% endblock %}

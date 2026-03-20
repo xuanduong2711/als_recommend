@@ -1,0 +1,11 @@
+Flask
+Jinja2
+python-dotenv
+scikit-learn
+scipy
+faker
+rapidfuzz
+pyarrow
+adjustText
+matplotlib>=3.5.0
+seaborn

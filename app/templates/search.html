@@ -1,0 +1,118 @@
+{% extends "_layout.html" %}
+
+{% block title %}Kết quả tìm kiếm cho "{{ query }}" - BookStore{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="row search-container mt-4">
+        <div class="col-md-12">
+            <div class="input-group mb-3">
+                <input type="text" class="form-control" placeholder="Tìm kiếm sách, tác giả..." id="searchInput" value="{% if query %}{{ query }}{% endif %}">
+                <div class="input-group-append">
+                    <button class="btn btn-outline-secondary" type="button" id="searchButton">
+                        <i class="fas fa-search"></i> Tìm kiếm
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-4">
+        {% if error %}
+        <div class="alert alert-danger" role="alert">
+            <i class="fas fa-exclamation-triangle"></i> {{ error }}
+        </div>
+        {% elif query %}
+        <div class="row">
+            <div class="col-12">
+                <h4 class="mb-3">
+                    Kết quả tìm kiếm cho: "<span class="text-primary">{{ query }}</span>"
+                    {% if results_count %}
+                    <small class="text-muted">({{ results_count }} cuốn sách)</small>
+                    {% endif %}
+                </h4>
+            </div>
+        </div>
+
+        {% if books %}
+        <div class="row">
+            {% for book in books %}
+            <div class="col-lg-3 col-md-4 col-sm-6 mb-4">
+                <div class="card h-100 shadow-sm">
+                    <div class="card-img-container" style="height: 200px; overflow: hidden;">
+                        {% set image_path = book.image_path or 'placeholder.jpg' %}
+                        <img src="{{ url_for('static', path='image/' + image_path.split('/')[-1]) }}"
+                             class="card-img-top"
+                             alt="{{ book.book_title }}"
+                             style="width: 100%; height: 100%; object-fit: cover;"
+                             onerror="this.onerror=null;this.src='{{ url_for('static', path='image/placeholder.jpg') }}';">
+                    </div>
+                    <div class="card-body d-flex flex-column">
+                        <h6 class="card-title">{{ book.book_title[:80] }}{% if book.book_title|length > 80 %}...{% endif %}</h6>
+                        <div class="product-info mt-auto">
+                            <p class="card-text"><small class="text-muted"><strong>Tác giả:</strong> {{ book.author or 'N/A' }}</small></p>
+                            <p class="card-text"><strong class="text-danger">{{ "{:,.0f}".format(book.price) if book.price else 'N/A' }} ₫</strong></p>
+                            <div class="d-flex justify-content-between align-items-center">
+                                {% if book.avg_star %}
+                                <div class="rating">
+                                    <span class="text-warning"><i class="fas fa-star"></i></span>
+                                    <small class="text-muted"> ({{ book.avg_star }})</small>
+                                </div>
+                                {% endif %}
+                                {% if book.num_sold %}
+                                <small class="text-muted">Đã bán: {{ "{:,}".format(book.num_sold) }}</small>
+                                {% endif %}
+                            </div>
+                            {% if book.num_rating %}
+                            <small class="text-muted">{{ "{:,}".format(book.num_rating) }} đánh giá</small>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="alert alert-info text-center" role="alert">
+            <i class="fas fa-search fa-3x mb-3"></i>
+            <h5>Không tìm thấy cuốn sách nào</h5>
+            <p>Hãy thử tìm kiếm với từ khóa khác hoặc kiểm tra lại chính tả.</p>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="alert alert-info text-center" role="alert">
+            <i class="fas fa-search fa-3x mb-3"></i>
+            <h5>Tìm kiếm Sách</h5>
+            <p>Nhập từ khóa để tìm kiếm sách, tác giả, hoặc thể loại.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Handle search functionality
+        function performSearch() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (query) {
+                window.location.href = `/search?query=${encodeURIComponent(query)}`;
+            }
+        }
+        
+        // Search button click
+        document.getElementById('searchButton').addEventListener('click', performSearch);
+        
+        // Enter key press in search input
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                performSearch();
+            }
+        });
+
+        // Focus search input on page load
+        document.getElementById('searchInput').focus();
+    });
+</script>
+{% endblock %}
