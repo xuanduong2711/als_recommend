@@ -1,4 +1,5 @@
 # app/main.py
+import re
 import time
 from urllib.parse import parse_qs
 
@@ -87,6 +88,42 @@ def _required_text_query_arg(
         )
 
     return value, None
+
+USER_ID_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _user_id_query_arg(
+    request: Request,
+    name: str = "user_id",
+    required: bool = False,
+) -> tuple[int | str | None, JSONResponse | None]:
+    raw_value = request.query_params.get(name)
+
+    if raw_value is None or raw_value.strip() == "":
+        if required:
+            return None, _json_error(f"Thiếu tham số {name}.", 400, "missing_parameter")
+        return None, None
+
+    value = raw_value.strip()
+    if value.isdigit():
+        number = int(value)
+        if number <= 0:
+            return None, _json_error(f"Tham số {name} phải là số nguyên.", 400, "invalid_parameter")
+        return number, None
+
+    if USER_ID_UUID_RE.fullmatch(value):
+        return value.lower(), None
+
+    return None, _json_error(f"Tham số {name} phải là số nguyên.", 400, "invalid_parameter")
+
+
+def _user_id_payload_value(user_id: object) -> int | str:
+    text = str(user_id).strip() if user_id is not None else ""
+    if text.isdigit():
+        return int(text)
+    return text
 
 
 async def _form_int_arg(request: Request, name: str) -> int | None:
@@ -220,6 +257,7 @@ def create_app() -> FastAPI:
             },
         )
 
+
     @app.get(f"/api/{API_VERSION}/health")
     async def health_check_api():
         return {"status": "ok", "version": API_VERSION}
@@ -349,7 +387,7 @@ def create_app() -> FastAPI:
 
         return {
             "version": API_VERSION,
-            "user_id": int(user_id),
+            "user_id": _user_id_payload_value(user_id),
             "book_id": str(book_id).strip(),
             "results_count": len(books),
             "books": books,
@@ -376,7 +414,7 @@ def create_app() -> FastAPI:
 
         return {
             "version": API_VERSION,
-            "user_id": int(user_id),
+            "user_id": _user_id_payload_value(user_id),
             "book_id": str(book_id).strip(),
             "results_count": len(books),
             "books": books,
@@ -384,7 +422,7 @@ def create_app() -> FastAPI:
 
     @app.get(f"/api/{API_VERSION}/recommendations")
     async def recommendations_api(request: Request):
-        user_id, error_response = _int_query_arg(request, "user_id", minimum=1, required=True)
+        user_id, error_response = _user_id_query_arg(request, "user_id", required=True)
         if error_response:
             return error_response
 

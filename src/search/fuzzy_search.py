@@ -143,6 +143,7 @@ def search_transformed_books(
     )
 
 
+
 def fuzzy_search_books(
     books: Any,
     query: str,
@@ -162,11 +163,12 @@ def fuzzy_search_books(
         return []
 
     columns = tuple(search_columns or SEARCH_COLUMNS)
+    adaptive_cutoff = _adaptive_score_cutoff(normalized_query, score_cutoff)
     scored_books: list[tuple[float, int, dict[str, Any]]] = []
 
     for position, record in enumerate(_iter_records(books)):
         score = _score_record(record, normalized_query, columns)
-        if score < score_cutoff:
+        if score < adaptive_cutoff:
             continue
 
         result = normalize_book_record(record) if normalize_output else dict(record)
@@ -176,7 +178,6 @@ def fuzzy_search_books(
 
     scored_books.sort(key=lambda item: (-item[0], item[1]))
     return [record for _, _, record in scored_books[:limit]]
-
 
 def search_books(
     books_or_query: Any,
@@ -312,8 +313,12 @@ def _score_record(
             fuzz.token_sort_ratio(normalized_query, combined_text),
         ) * 0.86
 
-    return max(title_score, author_score, tag_score, id_score, combined_score)
+    lexical_score = max(title_score, author_score, tag_score, id_score, combined_score)
+    if lexical_score <= 0:
+        return 0.0
 
+    rerank_prior = _record_rerank_prior(record)
+    return min(100.0, lexical_score * 0.9 + rerank_prior * 0.1)
 
 def _best_column_score(
     values: Mapping[str, str],
@@ -358,6 +363,35 @@ def _is_weak_multi_token_match(normalized_query: str, value: str) -> bool:
     return False
 
 
+
+
+def _adaptive_score_cutoff(normalized_query: str, base_cutoff: int) -> float:
+    token_count = len(normalized_query.split())
+    if token_count <= 1:
+        return max(float(base_cutoff), 62.0)
+    if token_count == 2:
+        return max(float(base_cutoff), 58.0)
+    return float(base_cutoff)
+
+
+def _record_rerank_prior(record: Mapping[str, Any]) -> float:
+    avg_star = _to_number(record.get("avg_star"))
+    if avg_star is None:
+        avg_star = _to_number(record.get("average_rating"))
+
+    num_rating = _to_number(record.get("num_rating"))
+    if num_rating is None:
+        num_rating = _to_number(record.get("total_ratings_count"))
+
+    rating_signal = 0.0
+    if avg_star is not None:
+        rating_signal = min(max(avg_star / 5.0, 0.0), 1.0)
+
+    popularity_signal = 0.0
+    if num_rating is not None and num_rating > 0:
+        popularity_signal = min(1.0, (num_rating ** 0.5) / 50.0)
+
+    return (rating_signal * 75.0) + (popularity_signal * 25.0)
 def _read_data_file(path: Path) -> pd.DataFrame:
     suffix = path.suffix.lower()
     if suffix == ".csv":

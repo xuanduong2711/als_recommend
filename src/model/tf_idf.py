@@ -101,7 +101,7 @@ def load_from_transform_output(
 
 def train_from_transform_output(
     path: str | Path = "data/book_features_dataset",
-    id_col: str = "work_id",
+    id_col: Optional[str] = None,
     content_col: str = "combined_features",
     max_features: int = 5000,
     expand_tags: bool = True,
@@ -121,10 +121,11 @@ def train_from_transform_output(
         Fitted ContentBasedRecommender instance.
     """
     data = load_from_transform_output(path, expand_tags=expand_tags)
+    selected_id_col = id_col or preferred_id_column(data)
     recommender = ContentBasedRecommender(max_features=max_features)
     return recommender.fit(
         data,
-        id_col=id_col,
+        id_col=selected_id_col,
         content_col=content_col,
         metadata_cols=metadata_cols,
     )
@@ -460,6 +461,31 @@ def infer_id_column(df: pd.DataFrame) -> str:
         f"Available columns: {', '.join(df.columns)}"
     )
 
+
+
+
+def preferred_id_column(df: pd.DataFrame) -> str:
+    """Choose an item id column optimized for external API compatibility."""
+    if "book_id" in df.columns and _looks_like_uuid_series(df["book_id"]):
+        return "book_id"
+    return infer_id_column(df)
+
+
+def _looks_like_uuid_series(series: pd.Series, sample_size: int = 20) -> bool:
+    non_empty = series.dropna().astype(str).str.strip()
+    non_empty = non_empty[non_empty.ne("")]
+    if non_empty.empty:
+        return False
+
+    sample = non_empty.head(sample_size)
+    if sample.empty:
+        return False
+
+    uuid_pattern = re.compile(
+        r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    )
+    matches = sample.map(lambda value: bool(uuid_pattern.fullmatch(value)))
+    return bool(matches.mean() >= 0.7)
 
 def _read_table_file(path: Path) -> pd.DataFrame:
     suffix = path.suffix.lower()
