@@ -1,3 +1,18 @@
-archive/
-data/
-test_code/
+# Ignore everything by default
+*
+
+# Keep this file tracked
+!.gitignore
+
+# Keep only requested paths/files
+!requirements.txt
+!app/
+app/*
+!app/api/
+!app/api/**
+!src/
+!src/**
+
+# Python cache/compiled files
+__pycache__/
+*.py[cod]

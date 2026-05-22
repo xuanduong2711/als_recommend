@@ -5,9 +5,11 @@ class Config:
     """
     Lớp cấu hình cơ sở cho ứng dụng.
     """
-    # Khóa bí mật RẤT quan trọng để bảo mật session, nên đặt là một chuỗi ngẫu nhiên
-    # Đặt trong biến môi trường là tốt nhất, nhưng để 'dev' ở đây cho đơn giản
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'my_dev_secret_key_12345')
+    # Khóa bí mật nên đặt qua biến môi trường trong production.
+    SECRET_KEY = os.environ.get('SECRET_KEY') or os.urandom(32)
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SAMESITE = 'Lax'
+    SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', 'false').lower() == 'true'
     
     # Bật/tắt chế độ debug
     DEBUG = os.environ.get('FLASK_DEBUG', True)

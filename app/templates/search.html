@@ -17,6 +17,12 @@
         </div>
     </div>
 
+    <div class="mt-4 d-none" id="purchaseRecommendations">
+        <h4 class="text-center mb-2">Đề xuất cá nhân hóa</h4>
+        <p class="text-center text-muted mb-4" id="purchaseRecommendationContext"></p>
+        <div class="row mt-4" id="purchaseRecommendationsContainer"></div>
+    </div>
+
     <div class="mt-4">
         {% if error %}
         <div class="alert alert-danger" role="alert">
@@ -40,8 +46,15 @@
             <div class="col-lg-3 col-md-4 col-sm-6 mb-4">
                 <div class="card h-100 shadow-sm">
                     <div class="card-img-container" style="height: 200px; overflow: hidden;">
-                        {% set image_path = book.image_path or 'placeholder.jpg' %}
-                        <img src="{{ url_for('static', path='image/' + image_path.split('/')[-1]) }}"
+                        {% set image_path = book.image_path %}
+                        {% if image_path and image_path.startswith('http') %}
+                            {% set image_src = image_path %}
+                        {% elif image_path %}
+                            {% set image_src = url_for('static', path='image/' + image_path.split('/')[-1]) %}
+                        {% else %}
+                            {% set image_src = url_for('static', path='image/placeholder.jpg') %}
+                        {% endif %}
+                        <img src="{{ image_src }}"
                              class="card-img-top"
                              alt="{{ book.book_title }}"
                              style="width: 100%; height: 100%; object-fit: cover;"
@@ -67,6 +80,9 @@
                             <small class="text-muted">{{ "{:,}".format(book.num_rating) }} đánh giá</small>
                             {% endif %}
                         </div>
+                    </div>
+                    <div class="card-footer bg-white border-0 pt-0">
+                        <button class="btn btn-primary btn-sm btn-block purchase-button" data-book-id="{{ book.book_id or book.work_id or '' }}">Mua & gợi ý</button>
                     </div>
                 </div>
             </div>
@@ -108,6 +124,72 @@
         document.getElementById('searchInput').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 performSearch();
+            }
+        });
+
+        function displayRecommendationBooks(books) {
+            const container = document.getElementById('purchaseRecommendationsContainer');
+            container.innerHTML = "";
+
+            books.forEach(book => {
+                const bookCard = document.createElement('div');
+                bookCard.className = 'col-lg-3 col-md-4 col-sm-6 mb-4';
+                const imagePath = book.image_path ?
+                    (book.image_path.startsWith('http') ? book.image_path : `/static/image/${book.image_path}`) :
+                    '/static/image/placeholder.jpg';
+                const score = book.similarity_score ? Number(book.similarity_score).toFixed(3) : 'N/A';
+
+                bookCard.innerHTML = `
+                    <div class="card h-100 shadow-sm">
+                        <img src="${imagePath}" class="card-img-top" alt="${book.book_title || 'Bìa sách'}"
+                             onerror="this.src='/static/image/placeholder.jpg'" style="height: 200px; object-fit: cover;">
+                        <div class="card-body">
+                            <h6 class="card-title">${book.book_title || 'Unknown Book'}</h6>
+                            <p class="card-text"><small class="text-muted"><strong>Tác giả:</strong> ${book.author || 'N/A'}</small></p>
+                            <p class="card-text"><small class="text-muted"><strong>Độ tương tự ALS:</strong> ${score}</small></p>
+                        </div>
+                    </div>`;
+                container.appendChild(bookCard);
+            });
+        }
+
+        function purchaseBook(bookId) {
+            if (!bookId) {
+                alert('Sách này chưa có book_id để ghi nhận mua/rating.');
+                return;
+            }
+
+            const section = document.getElementById('purchaseRecommendations');
+            const context = document.getElementById('purchaseRecommendationContext');
+            const container = document.getElementById('purchaseRecommendationsContainer');
+            section.classList.remove('d-none');
+            context.textContent = `Đang lấy đề xuất cá nhân hóa cho User #123 sau khi mua sách...`;
+            container.innerHTML = '<div class="col-12 text-center"><div class="spinner-border text-primary" role="status"><span class="sr-only">Loading...</span></div></div>';
+
+            fetch('/api/v1/purchases/recommendations', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({user_id: 123, book_id: bookId, num: 8})
+            })
+                .then(response => response.json().then(payload => ({ok: response.ok, payload})))
+                .then(({ok, payload}) => {
+                    if (!ok) {
+                        throw new Error(payload.error ? payload.error.message : 'Không thể lấy đề xuất.');
+                    }
+                    context.textContent = `Đề xuất cho User #${payload.user_id} sau khi mua sách`;
+                    displayRecommendationBooks(payload.books);
+                    section.scrollIntoView({behavior: 'smooth', block: 'start'});
+                })
+                .catch(error => {
+                    context.textContent = "";
+                    container.innerHTML = `<div class="col-12"><div class="alert alert-warning text-center">${error.message}</div></div>`;
+                });
+        }
+
+        document.addEventListener('click', function(event) {
+            const button = event.target.closest('.purchase-button');
+            if (button) {
+                purchaseBook(button.dataset.bookId);
             }
         });
 

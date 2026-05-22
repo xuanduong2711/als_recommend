@@ -1,6 +1,10 @@
-Flask
+fastapi
+uvicorn
+httpx
 Jinja2
 python-dotenv
+pandas
+pyspark
 scikit-learn
 scipy
 faker
@@ -9,3 +13,5 @@ pyarrow
 adjustText
 matplotlib>=3.5.0
 seaborn
+elasticsearch
+pytest

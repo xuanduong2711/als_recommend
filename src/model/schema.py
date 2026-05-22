@@ -1,48 +1,83 @@
-"""Data models for the recommendation system."""
+"""Pydantic models for transformed book recommendation data."""
 
-from typing import Optional
-from pydantic import BaseModel
+from typing import Any, Optional
+
+try:
+    from pydantic import BaseModel
+except ModuleNotFoundError:
+
+    class BaseModel:
+        """Small fallback when pydantic is not installed."""
+
+        def __init__(self, **data: Any) -> None:
+            annotations: dict[str, Any] = {}
+            for cls in reversed(self.__class__.mro()):
+                annotations.update(getattr(cls, "__annotations__", {}))
+
+            for field_name in annotations:
+                if field_name in data:
+                    setattr(self, field_name, data.pop(field_name))
+                elif hasattr(self.__class__, field_name):
+                    setattr(self, field_name, getattr(self.__class__, field_name))
+                else:
+                    raise TypeError(f"Missing required field: {field_name}")
+
+            if data:
+                extra = ", ".join(sorted(data))
+                raise TypeError(f"Unexpected field(s): {extra}")
+
+        def dict(self) -> dict[str, Any]:
+            return {
+                field_name: getattr(self, field_name)
+                for field_name in getattr(self.__class__, "__annotations__", {})
+            }
 
 
-class Product(BaseModel):
-    """Product data model."""
+class Book(BaseModel):
+    """Book metadata from ``data/book_features_dataset``."""
 
-    product_id: int
-    product_name: str
-    brand: Optional[str] = None
-    origin: Optional[str] = None
-    type: Optional[str] = None
-    skin_kind: Optional[str] = None
-    price: Optional[float] = None
+    work_id: int
+    book_id: Optional[int] = None
+    title: Optional[str] = None
+    book_title: Optional[str] = None
+    authors: Optional[str] = None
+    author: Optional[str] = None
+    year: Optional[int | str] = None
+    average_rating: Optional[float] = None
     avg_star: Optional[float] = None
+    total_ratings_count: Optional[int] = None
     num_rating: Optional[int] = None
-    num_sold_time: Optional[int] = None
+    image_url: Optional[str] = None
     image_path: Optional[str] = None
-    popularity_score: Optional[float] = None
-    processed_description: Optional[str] = None
-    combined_text: Optional[str] = None
+    tags: Optional[str] = None
+    genre: Optional[str] = None
+    score: Optional[float] = None
+    pred_rating: Optional[float] = None
 
 
-class Purchase(BaseModel):
-    """Purchase data model."""
+class RatingInteraction(BaseModel):
+    """User rating row from ``data/interactions_dataset``."""
 
     user_id: int
-    product_id: int
-    cmt_date: str
+    work_id: int
+    book_id: Optional[int] = None
+    rating: float
 
 
 class RecommendationRequest(BaseModel):
     """Request model for recommendations."""
 
-    user_id: int
+    user_id: Optional[int] = None
+    work_id: Optional[int] = None
+    query: Optional[str] = None
     num_recommendations: Optional[int] = 15
 
 
 class RecommendationResponse(BaseModel):
-    """Response model for recommendations."""
+    """Response model for book recommendations."""
 
-    products: list[Product]
-    based_on_product: Optional[Product] = None
+    books: list[Book]
+    based_on_book: Optional[Book] = None
     message: Optional[str] = None
 
 
@@ -51,3 +86,8 @@ class ErrorResponse(BaseModel):
 
     error: str
     detail: Optional[str] = None
+
+
+# Backward-compatible names for older app code.
+Product = Book
+Purchase = RatingInteraction

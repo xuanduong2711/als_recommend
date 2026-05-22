@@ -1,230 +1,326 @@
-# from pyspark.sql import SparkSession, Window
-# from pyspark.sql.functions import *
-# from pyspark.sql.types import *
+"""Build recommendation datasets from the Goodreads archive CSV files.
 
-# import os, shutil
+Outputs:
+* ``data/interactions_dataset/part-00000.csv``
+  ``user_id,work_id,book_id,rating`` averaged per user/work.
+* ``data/book_features_dataset/part-00000.csv``
+  canonical book fields plus UI/model compatibility aliases.
 
-# # --- 1. Khởi tạo Spark Session và Schemas ---
-# print("Đang khởi tạo Spark Session...")
-# spark = (
-#     SparkSession.builder
-#     .appName("BookRecommenderTransform") \
-#     .master("local[*]") \
-#     .config("spark.executor.memory", "8g") \
-#     # THAY ĐỔI: Cấu hình driver JDBC cho MSSQL
-#     # Bạn cần tải file JAR (ví dụ: mssql-jdbc-12.4.2.jre8.jar) 
-#     # và cung cấp đường dẫn tuyệt đối tại đây.
-#     .config("spark.jars", "/path/to/your/mssql-jdbc-12.4.2.jre8.jar") \
-#     .getOrCreate()
-# )
+The script intentionally uses only the Python standard library so it can run in
+minimal environments where pandas or pyspark are not installed.
+"""
 
-# book_tags_schema= StructType([
-#     StructField('goodreads_book_id', StringType(), True),
-#     StructField('tag_id', StringType(), True),
-#     StructField('count', IntegerType(), True),   
-# ])
+from __future__ import annotations
 
-# books_schema = StructType([
-#     StructField("index", StringType(), True),
-#     StructField("book_id", StringType(), True),
-#     StructField("best_book_id", StringType(), True),
-#     StructField("work_id", StringType(), True),
-#     StructField("books_count", IntegerType(), True),
-#     StructField("isbn", StringType(), True),
-#     StructField("isbn13", StringType(), True),
-#     StructField("authors", StringType(), True),
-#     StructField("original_publication_year", DoubleType(), True),
-#     StructField("original_title", StringType(), True),
-#     StructField("title", StringType(), True),
-#     StructField("language_code", StringType(), True),
-#     StructField("average_rating", DoubleType(), True),
-#     StructField("ratings_count", IntegerType(), True),
-#     StructField("work_ratings_count", IntegerType(), True),
-#     StructField("work_text_reviews_count", IntegerType(), True),
-#     StructField("ratings_1", IntegerType(), True),
-#     StructField("ratings_2", IntegerType(), True),
-#     StructField("ratings_3", IntegerType(), True),
-#     StructField("ratings_4", IntegerType(), True),
-#     StructField("ratings_5", IntegerType(), True),
-#     StructField("image_url", StringType(), True),
-#     StructField("small_image_url", StringType(), True)
-# ])
-
-# ratings_schema= StructType([
-#     StructField('book_id', StringType(), True),
-#     StructField('user_id', StringType(), True),
-#     StructField('rating', IntegerType(), True),   
-# ])
-
-# tags_schema= StructType([
-#     StructField('tag_id', IntegerType(), True),
-#     StructField('tag_name', StringType(), True), 
-# ])
-
-# # --- 2. Đọc dữ liệu (Giữ nguyên) ---
-# print("Đang đọc dữ liệu từ CSV...")
-# df_book_tags = spark.read.csv("archive/book_tags.csv", header=True, schema= book_tags_schema)
-# df_books     = spark.read.csv("archive/books.csv", header=True, schema= books_schema)
-# df_ratings   = spark.read.csv("archive/ratings.csv", header=True, schema= ratings_schema)
-# df_tags      = spark.read.csv("archive/tags.csv", header=True, schema= tags_schema)
-# # df_to_read   = spark.read.csv("archive/to_read.csv", header=True, schema= to_read_schema) # Dữ liệu này có thể dùng sau
-
-# print("Đã đọc dữ liệu xong.")
-
-# # --- 3. Xử lý Bảng 1: interactions_df (User-Item-Rating) ---
-# # Mục tiêu: Tạo bảng (user_id, work_id, rating)
-# # Dùng work_id (tác phẩm) thay vì book_id (phiên bản)
-# print("Bắt đầu xử lý Bảng 1: Interactions (Collaborative Filtering)...")
-
-# # Lọc các cột cần thiết từ df_books
-# df_book_work_map = df_books.select("book_id", "work_id").distinct()
-
-# # Join ratings với map để lấy work_id
-# # Xử lý trường hợp người dùng rate nhiều phiên bản (book_id) của cùng 1 tác phẩm (work_id)
-# # -> Lấy rating TRUNG BÌNH của họ cho tác phẩm đó
-# interactions_df = (
-#     df_ratings
-#     .na.drop() # Bỏ các rating null
-#     .join(df_book_work_map, "book_id", "inner")
-#     .groupBy("user_id", "work_id")
-#     .agg(avg("rating").alias("rating"))
-#     .select(
-#         col("user_id").cast(IntegerType()),
-#         col("work_id").cast(IntegerType()),
-#         col("rating")
-#     )
-# )
-# interactions_df = interactions_df.na.drop() # Đảm bảo user_id, work_id là số
-
-# print("Hoàn thành Bảng 1 (Interactions):")
-# interactions_df.show(5)
-# interactions_df.printSchema()
-# print(f"Tổng số lượt tương tác (ratings): {interactions_df.count()}")
+import argparse
+import csv
+import shutil
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
 
 
-# # --- 4. Xử lý Bảng 2: book_features_df (Item Features) ---
-# # Mục tiêu: Tạo bảng (work_id, authors, year, tags_list)
-# print("\nBắt đầu xử lý Bảng 2: Book Features (Content-Based)...")
-
-# # 4a. Lấy các feature cơ bản từ df_books
-# # Nhóm theo work_id và lấy thông tin đại diện (ví dụ: lấy của bản đầu tiên)
-# # Chúng ta cũng lấy 'work_ratings_count' làm 'total_ratings_count' để xử lý Cold Start
-# book_base_features = (
-#     df_books
-#     .groupBy("work_id")
-#     .agg(
-#         first("original_title").alias("title"),
-#         first("authors").alias("authors"),
-#         first("original_publication_year").alias("year"),
-#         first("average_rating").alias("average_rating"),
-#         first("work_ratings_count").alias("total_ratings_count"),
-#         first("image_url").alias("image_url")
-#     )
-# )
-
-# # 4b. Xử lý Tags: Ghép tags thành một danh sách (list) cho mỗi work_id
-# # Join book_tags với tags để lấy tag_name
-# df_named_tags = df_book_tags.join(df_tags, "tag_id", "inner")
-
-# # Join với map (df_book_work_map) để lấy work_id
-# # Tổng hợp 'count' cho các tag_name bị trùng lặp trong cùng 1 work_id (do nhiều book_id)
-# work_tags_agg = (
-#     df_named_tags
-#     .join(df_book_work_map, df_named_tags.goodreads_book_id == df_book_work_map.book_id, "inner")
-#     .groupBy("work_id", "tag_name")
-#     .agg(sum("count").alias("tag_count"))
-# )
-
-# # Lấy Top 20 tags phổ biến nhất cho mỗi work_id (để loại bỏ nhiễu)
-# window_spec = Window.partitionBy("work_id").orderBy(col("tag_count").desc())
-# top_work_tags = (
-#     work_tags_agg
-#     .withColumn("rank", rank().over(window_spec))
-#     .filter(col("rank") <= 20) # Lấy top 20 tags
-# )
-
-# # Gom các tag_name thành 1 danh sách (array)
-# book_tags_list = (
-#     top_work_tags
-#     .groupBy("work_id")
-#     .agg(collect_list("tag_name").alias("tags_array")) # Đổi tên tạm để tránh nhầm lẫn
-# )
-
-# # 4c. Join base features và tag list
-# book_features_df = (
-#     book_base_features
-#     .join(book_tags_list, "work_id", "left")
-#     .select(
-#         col("work_id").cast(IntegerType()),
-#         col("title"),
-#         col("authors"),
-#         col("year"),
-#         col("average_rating"),
-#         col("total_ratings_count"), # Rất quan trọng cho việc xử lý Cold Start
-#         col("image_url"),
-#         # SỬA LỖI: Chuyển Array<String> thành String, dùng dấu | ngăn cách
-#         concat_ws("|", col("tags_array")).alias("tags") 
-#     )
-# )
-# book_features_df = book_features_df.na.drop(subset=["work_id"]) # Đảm bảo work_id không null
-
-# print("Hoàn thành Bảng 2 (Book Features):")
-# book_features_df.show(5, truncate=False)
-# book_features_df.printSchema() # Bây giờ 'tags' sẽ là kiểu String
-# print(f"Tổng số sách (works): {book_features_df.count()}")
+DEFAULT_ARCHIVE_DIR = Path("archive")
+DEFAULT_OUTPUT_DIR = Path("data")
+DEFAULT_TOP_TAGS = 20
+INTERACTION_COLUMNS = ["user_id", "work_id", "book_id", "rating"]
+BOOK_FEATURE_COLUMNS = [
+    "work_id",
+    "book_id",
+    "title",
+    "book_title",
+    "authors",
+    "author",
+    "year",
+    "average_rating",
+    "avg_star",
+    "total_ratings_count",
+    "num_rating",
+    "image_url",
+    "image_path",
+    "tags",
+    "genre",
+]
 
 
-# # --- 5. Lưu kết quả vào Database ---
-# print("\nBắt đầu lưu 2 bộ dữ liệu vào Database...")
+@dataclass(frozen=True)
+class Paths:
+    archive_dir: Path
+    output_dir: Path
 
-# # Cấu hình kết nối Database (THAY ĐỔI: MSSQL)
-# # *** THAY ĐỔI CÁC GIÁ TRỊ NÀY THEO CẤU HÌNH CỦA BẠN ***
-# db_url = "jdbc:sqlserver://localhost:1433;databaseName=book_recommender_db"
-# db_properties = {
-#     "user": "mssql_user",
-#     "password": "mssql_password",
-#     "driver": "com.microsoft.sqlserver.jdbc.SQLServerDriver"
-# }
+    @property
+    def books(self) -> Path:
+        return self.archive_dir / "books.csv"
 
-# # Lưu Bảng 1: Interactions Dataset
-# interactions_table = "interactions_dataset" # Tên bảng trong DB
-# print(f"Đang lưu Bảng 1 vào table: {interactions_table}")
-# (
-#     interactions_df
-#     .write
-#     .jdbc(url=db_url, table=interactions_table, mode="overwrite", properties=db_properties)
-# )
-# print(f"Đã lưu Interactions Dataset vào table: {interactions_table}")
+    @property
+    def ratings(self) -> Path:
+        return self.archive_dir / "ratings.csv"
 
-# # Lưu Bảng 2: Book Features Dataset
-# features_table = "book_features_dataset" # Tên bảng trong DB
-# print(f"Đang lưu Bảng 2 vào table: {features_table}")
-# (
-#     book_features_df
-#     .write
-#     .jdbc(url=db_url, table=features_table, mode="overwrite", properties=db_properties)
-# )
-# print(f"Đã lưu Book Features Dataset vào table: {features_table}")
+    @property
+    def book_tags(self) -> Path:
+        return self.archive_dir / "book_tags.csv"
+
+    @property
+    def tags(self) -> Path:
+        return self.archive_dir / "tags.csv"
+
+    @property
+    def interactions_output(self) -> Path:
+        return self.output_dir / "interactions_dataset"
+
+    @property
+    def features_output(self) -> Path:
+        return self.output_dir / "book_features_dataset"
 
 
-# print("\n--- Hoàn tất ETL và lưu vào Database ---")
-# spark.stop()
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Transform archive CSV files for recommendation models.")
+    parser.add_argument("--archive-dir", type=Path, default=DEFAULT_ARCHIVE_DIR)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--top-tags", type=int, default=DEFAULT_TOP_TAGS)
+    args = parser.parse_args()
 
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import *
-from pyspark.sql.types import *
+    paths = Paths(args.archive_dir, args.output_dir)
+    validate_inputs(paths)
 
-import os, shutil
-spark = (
-    SparkSession.builder
-    .appName("BookRecommenderTransform") \
-    .master("local[10]") \
-    .config("spark.executor.memory", "8g") \
-    .getOrCreate()
-)
-sc = spark.sparkContext
+    print("Loading books...")
+    book_work_map, book_features = load_books(paths.books)
+    print(f"Loaded {len(book_features):,} works from {paths.books}")
 
-# Tạo một RDD từ một list bằng parallelize()
-rdd_data = sc.parallelize([1, 2, 3, 4, 5]) 
-rdd_data.collect()
-rdd_data.getNumPartitions()
+    print("Building interactions dataset...")
+    interactions = build_interactions(paths.ratings, book_work_map)
+    write_csv_dataset(
+        paths.interactions_output,
+        INTERACTION_COLUMNS,
+        iter_interaction_rows(interactions),
+    )
+    print(f"Wrote {len(interactions):,} interactions to {paths.interactions_output}")
+
+    print("Building book features dataset...")
+    tag_names = load_tag_names(paths.tags)
+    work_tags = build_work_tags(
+        book_tags_path=paths.book_tags,
+        tag_names=tag_names,
+        book_work_map=book_work_map,
+        top_tags=max(0, args.top_tags),
+    )
+    write_csv_dataset(
+        paths.features_output,
+        BOOK_FEATURE_COLUMNS,
+        iter_feature_rows(book_features, work_tags),
+    )
+    print(f"Wrote {len(book_features):,} book features to {paths.features_output}")
+
+
+def validate_inputs(paths: Paths) -> None:
+    missing = [
+        path
+        for path in (paths.books, paths.ratings, paths.book_tags, paths.tags)
+        if not path.exists()
+    ]
+    if missing:
+        missing_text = ", ".join(str(path) for path in missing)
+        raise FileNotFoundError(f"Missing required input file(s): {missing_text}")
+
+
+def load_books(books_path: Path) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Return ``book_id -> work_id`` and one metadata row per work."""
+    book_work_map: dict[str, str] = {}
+    book_features: dict[str, dict[str, str]] = {}
+
+    with books_path.open(newline="", encoding="utf-8") as file:
+        for row in csv.DictReader(file):
+            book_id = clean_value(row.get("book_id"))
+            work_id = clean_value(row.get("work_id"))
+            if not book_id or not work_id:
+                continue
+
+            book_work_map[book_id] = work_id
+            book_features.setdefault(
+                work_id,
+                {
+                    "work_id": work_id,
+                    "title": first_text(row.get("original_title"), row.get("title")),
+                    "authors": clean_value(row.get("authors")),
+                    "year": clean_year(row.get("original_publication_year")),
+                    "average_rating": clean_value(row.get("average_rating")),
+                    "total_ratings_count": clean_value(row.get("work_ratings_count")),
+                    "image_url": clean_value(row.get("image_url")),
+                },
+            )
+
+    return book_work_map, book_features
+
+
+def build_interactions(
+    ratings_path: Path,
+    book_work_map: dict[str, str],
+) -> dict[tuple[str, str], tuple[float, int]]:
+    """Average duplicate user ratings for the same work."""
+    rating_totals: dict[tuple[str, str], tuple[float, int]] = {}
+
+    with ratings_path.open(newline="", encoding="utf-8") as file:
+        for row in csv.DictReader(file):
+            book_id = clean_value(row.get("book_id"))
+            user_id = clean_value(row.get("user_id"))
+            rating = parse_float(row.get("rating"))
+            work_id = book_work_map.get(book_id)
+
+            if not user_id or not work_id or rating is None:
+                continue
+
+            key = (user_id, work_id)
+            total, count = rating_totals.get(key, (0.0, 0))
+            rating_totals[key] = (total + rating, count + 1)
+
+    return rating_totals
+
+
+def load_tag_names(tags_path: Path) -> dict[str, str]:
+    tag_names: dict[str, str] = {}
+    with tags_path.open(newline="", encoding="utf-8") as file:
+        for row in csv.DictReader(file):
+            tag_id = clean_value(row.get("tag_id"))
+            tag_name = clean_value(row.get("tag_name"))
+            if tag_id and tag_name:
+                tag_names[tag_id] = tag_name
+    return tag_names
+
+
+def build_work_tags(
+    book_tags_path: Path,
+    tag_names: dict[str, str],
+    book_work_map: dict[str, str],
+    top_tags: int,
+) -> dict[str, list[str]]:
+    if top_tags == 0:
+        return {}
+
+    tag_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+    with book_tags_path.open(newline="", encoding="utf-8") as file:
+        for row in csv.DictReader(file):
+            book_id = clean_value(row.get("goodreads_book_id"))
+            tag_id = clean_value(row.get("tag_id"))
+            count = parse_int(row.get("count"))
+            work_id = book_work_map.get(book_id)
+            tag_name = tag_names.get(tag_id)
+
+            if not work_id or not tag_name or count is None:
+                continue
+            tag_counts[work_id][tag_name] += count
+
+    work_tags: dict[str, list[str]] = {}
+    for work_id, counts in tag_counts.items():
+        ranked_tags = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        work_tags[work_id] = [tag_name for tag_name, _ in ranked_tags[:top_tags]]
+
+    return work_tags
+
+
+def iter_interaction_rows(
+    interactions: dict[tuple[str, str], tuple[float, int]],
+) -> Iterable[dict[str, str]]:
+    for (user_id, work_id), (total, count) in sorted(
+        interactions.items(),
+        key=lambda item: (int_or_text(item[0][0]), int_or_text(item[0][1])),
+    ):
+        yield {
+            "user_id": user_id,
+            "work_id": work_id,
+            "book_id": work_id,
+            "rating": format_float(total / count),
+        }
+
+
+def iter_feature_rows(
+    book_features: dict[str, dict[str, str]],
+    work_tags: dict[str, list[str]],
+) -> Iterable[dict[str, str]]:
+    for work_id, row in sorted(book_features.items(), key=lambda item: int_or_text(item[0])):
+        result = dict(row)
+        tags = "|".join(work_tags.get(work_id, []))
+        result["book_id"] = work_id
+        result["book_title"] = result.get("title", "")
+        result["author"] = result.get("authors", "")
+        result["avg_star"] = result.get("average_rating", "")
+        result["num_rating"] = result.get("total_ratings_count", "")
+        result["image_path"] = result.get("image_url", "")
+        result["tags"] = tags
+        result["genre"] = tags
+        yield result
+
+
+def write_csv_dataset(
+    output_dir: Path,
+    fieldnames: list[str],
+    rows: Iterable[dict[str, str]],
+) -> None:
+    temp_dir = output_dir.with_name(f".{output_dir.name}.tmp")
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    output_file = temp_dir / "part-00000.csv"
+    with output_file.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    (temp_dir / "_SUCCESS").touch()
+
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    temp_dir.replace(output_dir)
+
+
+def clean_value(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def first_text(*values: object) -> str:
+    for value in values:
+        text = clean_value(value)
+        if text:
+            return text
+    return ""
+
+
+def clean_year(value: object) -> str:
+    text = clean_value(value)
+    if text.endswith(".0"):
+        return text[:-2]
+    return text
+
+
+def parse_float(value: object) -> float | None:
+    try:
+        return float(clean_value(value))
+    except ValueError:
+        return None
+
+
+def parse_int(value: object) -> int | None:
+    try:
+        return int(float(clean_value(value)))
+    except ValueError:
+        return None
+
+
+def format_float(value: float) -> str:
+    text = f"{value:.4f}".rstrip("0").rstrip(".")
+    return text if "." in text else f"{text}.0"
+
+
+def int_or_text(value: str) -> int | str:
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+if __name__ == "__main__":
+    main()

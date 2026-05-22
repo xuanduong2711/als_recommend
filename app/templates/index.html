@@ -18,19 +18,16 @@
     </div>
 
     <div class="row recommendation-container">
-        <div class="col-md-8 mx-auto">
-            <h4 class="text-center mb-4">Đề xuất sách dựa trên User ID</h4>
-            <form action="/recommend/hybrid_books" method="post" id="recommendForm">
-                <div class="input-group mb-3">
-                    <input type="number" name="user_id" id="userIdInput" class="form-control" placeholder="Nhập User ID..." required>
-                    <div class="input-group-append">
-                        <button class="btn btn-primary" type="submit" id="recommendButton">
-                            <i class="fas fa-lightbulb"></i> Đề xuất
-                        </button>
-                    </div>
-                </div>
-            </form>
+        <div class="col-md-8 mx-auto text-center">
+            <h4 class="mb-2">Đề xuất sau khi mua sách</h4>
+            <p class="text-muted mb-0">User demo #123. Hãy bấm mua một sách để xem đề xuất cá nhân hóa từ Spark ALS.</p>
         </div>
+    </div>
+
+    <div class="mt-5 d-none" id="purchaseRecommendations">
+        <h2 class="text-center mb-2">Đề xuất cá nhân hóa</h2>
+        <p class="text-center text-muted mb-4" id="purchaseRecommendationContext"></p>
+        <div class="row mt-4" id="purchaseRecommendationsContainer"></div>
     </div>
 
     <div class="mt-5" id="popularBooks">
@@ -52,7 +49,7 @@
 <script>
     // Function to fetch popular books from API
     function fetchPopularBooks() {
-        fetch('/recommend/popular_books?num=9')
+        fetch('/api/v1/books/popular?num=9')
             .then(response => response.json())
             .then(data => {
                 displayPopularBooks(data.books);
@@ -90,11 +87,74 @@
                         </p>
                     </div>
                     <div class="card-footer">
-                        <button class="btn btn-primary btn-sm">Thêm vào giỏ</button>
+                        <button class="btn btn-primary btn-sm purchase-button" data-book-id="${book.book_id || book.work_id || ''}">Mua & gợi ý</button>
                     </div>
                 </div>`;
             container.appendChild(bookCard);
         });
+    }
+
+    function displayRecommendationBooks(books) {
+        const container = document.getElementById('purchaseRecommendationsContainer');
+        container.innerHTML = "";
+
+        books.forEach(book => {
+            const bookCard = document.createElement('div');
+            bookCard.className = 'col-md-4 mb-4';
+            const imagePath = book.image_path ?
+                (book.image_path.startsWith('http') ? book.image_path : `/static/image/${book.image_path}`) :
+                '/static/image/placeholder.jpg';
+            const score = book.similarity_score ? Number(book.similarity_score).toFixed(3) : 'N/A';
+
+            bookCard.innerHTML = `
+                <div class="card h-100">
+                    <img src="${imagePath}" class="card-img-top" alt="${book.book_title || 'Bìa sách'}"
+                         onerror="this.src='/static/image/placeholder.jpg'" style="height: 200px; object-fit: contain;">
+                    <div class="card-body">
+                        <h5 class="card-title">${book.book_title || 'Unknown Book'}</h5>
+                        <p class="card-text">
+                            <strong>Tác giả:</strong> ${book.author || 'N/A'}<br>
+                            <strong>Đánh giá:</strong> ${book.avg_star || '0'} (${book.num_rating || '0'} đánh giá)<br>
+                            <strong>Thể loại:</strong> ${book.genre || 'N/A'}<br>
+                            <strong>Độ tương tự ALS:</strong> ${score}
+                        </p>
+                    </div>
+                </div>`;
+            container.appendChild(bookCard);
+        });
+    }
+
+    function purchaseBook(bookId) {
+        if (!bookId) {
+            alert('Sách này chưa có book_id để ghi nhận mua/rating.');
+            return;
+        }
+
+        const section = document.getElementById('purchaseRecommendations');
+        const context = document.getElementById('purchaseRecommendationContext');
+        const container = document.getElementById('purchaseRecommendationsContainer');
+        section.classList.remove('d-none');
+        context.textContent = `Đang lấy đề xuất cá nhân hóa cho User #123 sau khi mua sách...`;
+        container.innerHTML = '<div class="col-12 text-center"><div class="spinner-border text-primary" role="status"><span class="sr-only">Loading...</span></div></div>';
+
+        fetch('/api/v1/purchases/recommendations', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({user_id: 123, book_id: bookId, num: 9})
+        })
+            .then(response => response.json().then(payload => ({ok: response.ok, payload})))
+            .then(({ok, payload}) => {
+                if (!ok) {
+                    throw new Error(payload.error ? payload.error.message : 'Không thể lấy đề xuất.');
+                }
+                context.textContent = `Đề xuất cho User #${payload.user_id} sau khi mua sách`;
+                displayRecommendationBooks(payload.books);
+                section.scrollIntoView({behavior: 'smooth', block: 'start'});
+            })
+            .catch(error => {
+                context.textContent = "";
+                container.innerHTML = `<div class="col-12"><div class="alert alert-warning text-center">${error.message}</div></div>`;
+            });
     }
 
     // Load popular books when the page loads
@@ -119,16 +179,11 @@
             }
         });
 
-        // Handle recommendation form submission
-        document.getElementById('recommendForm').addEventListener('submit', function(event) {
-            const userId = document.getElementById('userIdInput').value;
-            if (!userId) {
-                alert('Vui lòng nhập User ID');
-                event.preventDefault(); // Ngăn chặn submit nếu chưa nhập ID
-                return;
+        document.getElementById('popularBooksContainer').addEventListener('click', function(event) {
+            const button = event.target.closest('.purchase-button');
+            if (button) {
+                purchaseBook(button.dataset.bookId);
             }
-            // Không cần fetch, vì form đã có action="POST"
-            // Đoạn code này chỉ để validation
         });
     });
 </script>

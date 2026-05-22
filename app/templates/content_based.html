@@ -4,7 +4,8 @@
 
 {% block content %}
 <div class="container mt-5" id="recommendationResults">
-    <h2 class="text-center mb-4">Sách đề xuất cho User ID: {{ user_id }}</h2>
+    <h2 class="text-center mb-2">Đề xuất từ Spark ALS</h2>
+    <p class="text-center text-muted mb-4">User ID: {{ user_id }}</p>
 
     {% if error %}
     <div class="alert alert-danger text-center">
@@ -18,11 +19,7 @@
     </div>
     {% endif %}
 
-    {% if books and based_on_book %}
-    <div class="alert alert-info">
-        <p class="mb-0">Đề xuất dựa trên cuốn sách bạn đã xem/mua gần đây: <strong>{{ based_on_book.book_title or 'Không rõ sách' }}</strong> (ID: {{ based_on_book.book_id }})</p>
-    </div>
-
+    {% if books %}
     <div class="row mt-4" id="recommendedBooksContainer">
         {% for book in books %}
         <div class="col-md-4 mb-4">
@@ -42,7 +39,9 @@
                         <strong>Tác giả:</strong> {{ book.author or 'N/A' }}<br>
                         <strong>Giá:</strong> {{ book.price | float | round(0) | int | format(group_separator='.') if book.price else 'N/A' }} VNĐ<br>
                         <strong>Đánh giá:</strong> {{ book.avg_star or 'N/A' }} ({{ book.num_rating or 0 }} đánh giá)<br>
-                        <strong>Thể loại:</strong> {{ book.genre or 'N/A' }}
+                        <strong>Thể loại:</strong> {{ book.genre or 'N/A' }}{% if book.pred_rating is defined and book.pred_rating %}<br>
+                        <strong>Điểm ALS:</strong> {{ book.pred_rating | float | round(2) }}{% endif %}{% if book.rank is defined and book.rank %}<br>
+                        <strong>Thứ hạng:</strong> #{{ book.rank }}{% endif %}
                     </p>
                 </div>
                 <div class="card-footer">
@@ -82,7 +81,7 @@
 <script>
     // Function to fetch popular books from API
     function fetchPopularBooks() {
-        fetch('/recommend/popular_books?num=15') // Giả sử 15 là số lượng
+        fetch('/api/v1/books/popular?num=15')
             .then(response => response.json())
             .then(data => {
                 displayPopularBooks(data.books);
