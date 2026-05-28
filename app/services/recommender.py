@@ -3,11 +3,33 @@ import glob
 import json
 import os
 import threading
+import re
 import time
 from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
+
+
+_UUID_HEX_RE = re.compile(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+)
+
+_GUID_HEX_RE = re.compile(
+    r'^00000000-0000-0000-0000-([0-9a-fA-F]{12})$'
+)
+
+
+def int_to_guid_hex(x):
+    hex_part = format(int(x), 'X').zfill(12)
+    return f"00000000-0000-0000-0000-{hex_part}"
+
+
+def guid_hex_to_int(s):
+    m = _GUID_HEX_RE.match(str(s).strip())
+    if m:
+        return int(m.group(1), 16)
+    return None
 
 from src.model.als import (
     ALSBookRecommender,
@@ -15,8 +37,8 @@ from src.model.als import (
     DEFAULT_METADATA_PATH,
     create_spark_session,
 )
-from src.model.tf_idf import train_from_transform_output
-from src.search.fuzzy_search import fuzzy_search_books
+from src.model.tf_idf import ContentBasedRecommender, train_from_transform_output
+from src.search.elasticsearch_search import search_books_elasticsearch
 
 
 
@@ -38,6 +60,7 @@ DEFAULT_ALS_MODEL_CACHE_PATH = os.path.join('data', 'als_model_cache', 'model')
 DEFAULT_ALS_MODEL_METADATA_PATH = os.path.join('data', 'als_model_cache', 'metadata.json')
 DEFAULT_ALS_RETRAIN_INTERVAL_SECONDS = 3 * 24 * 60 * 60
 DEFAULT_ID_MAPPINGS_PATH = os.path.join(MSSQL_FEATURE_STORE_DIR, 'id_mappings.json')
+DEFAULT_CONTENT_MODEL_PKL_PATH = os.path.join('data', 'models', 'model.pkl')
 
 REQUIRED_COLUMNS = {
     'book_id': None,
@@ -100,7 +123,15 @@ def _normalize_book_data(data):
 
 def _records(data):
     clean_data = data.astype(object).where(pd.notnull(data), None)
-    return clean_data.to_dict('records')
+    records = clean_data.to_dict('records')
+    for record in records:
+        for id_key in ('book_id', 'work_id'):
+            raw = record.get(id_key)
+            if raw is not None:
+                text = str(raw).strip()
+                if text.isdigit():
+                    record[id_key] = int_to_guid_hex(text)
+    return records
 
 
 def _read_table(path):
@@ -152,9 +183,34 @@ def _load_book_data():
 book_data = _load_book_data()
 
 
+def _content_model_pkl_path() -> Path | None:
+    configured = os.environ.get("CONTENT_MODEL_PKL_PATH", DEFAULT_CONTENT_MODEL_PKL_PATH)
+    normalized = str(configured).strip() if configured is not None else ""
+    if not normalized:
+        return None
+    return Path(normalized)
+
+
 @lru_cache(maxsize=1)
 def _get_content_recommender():
-    source_path = os.environ.get('CONTENT_BOOK_DATA_PATH')
+    # Precedence: CONTENT_MODEL_PKL_PATH (or default model path) -> CONTENT_BOOK_DATA_PATH -> default training source.
+    model_file = _content_model_pkl_path()
+    env_path_configured = os.environ.get("CONTENT_MODEL_PKL_PATH") is not None
+    if model_file is not None and model_file.exists():
+        try:
+            return ContentBasedRecommender.load(model_file)
+        except Exception as exc:
+            print(
+                f"Không thể nạp content model từ {model_file}: {exc}. "
+                "Chuyển sang train runtime."
+            )
+    elif env_path_configured and model_file is not None:
+        print(
+            f"Không tìm thấy content model tại {model_file}. "
+            "Chuyển sang train runtime."
+        )
+
+    source_path = os.environ.get("CONTENT_BOOK_DATA_PATH")
     if source_path:
         return train_from_transform_output(path=source_path)
     return train_from_transform_output()
@@ -489,6 +545,10 @@ def get_recommendations_for_book(book_id, num=10):
     if not normalized_book_id:
         return [], "Thiếu tham số book_id.", 400
 
+    decoded = guid_hex_to_int(normalized_book_id)
+    if decoded is not None:
+        normalized_book_id = str(decoded)
+
     try:
         limit = _clamp_limit(num)
         recommender = _get_content_recommender()
@@ -623,6 +683,9 @@ def _normalize_recommendation_data(data):
 
 def get_recommendations_after_purchase(user_id=None, book_id=None, num=10):
     """Return ALS user recommendations after a purchase/rating event."""
+    decoded_user = guid_hex_to_int(user_id)
+    if decoded_user is not None:
+        user_id = str(decoded_user)
     normalized_user_id = _resolve_als_user_id(user_id)
     if normalized_user_id is None:
         return [], "User ID không hợp lệ. Vui lòng thử lại.", 400
@@ -630,6 +693,9 @@ def get_recommendations_after_purchase(user_id=None, book_id=None, num=10):
     normalized_book_id = str(book_id).strip() if book_id is not None else ""
     if not normalized_book_id:
         return [], "Thiếu tham số book_id.", 400
+    decoded = guid_hex_to_int(normalized_book_id)
+    if decoded is not None:
+        normalized_book_id = str(decoded)
 
     limit = _clamp_limit(num)
 
@@ -660,6 +726,9 @@ def get_recommendations_after_purchase(user_id=None, book_id=None, num=10):
 
 def get_recommendations_for_user(user_id, num=10, recommendations_path=None):
     """Return precomputed Spark ALS recommendations for ``user_id``."""
+    decoded_user = guid_hex_to_int(user_id)
+    if decoded_user is not None:
+        user_id = str(decoded_user)
     requested_user_id = str(user_id).strip() if user_id is not None else ''
     normalized_user_id = _resolve_als_user_id(user_id)
     if normalized_user_id is None:
@@ -700,13 +769,11 @@ def find_books_by_query(query):
         return [], "Hệ thống đang bảo trì. Vui lòng thử lại sau."
 
     try:
-        results = fuzzy_search_books(
-            book_data,
+        results = search_books_elasticsearch(
             query=query,
             limit=50,
-            score_cutoff=50,
-            search_columns=('book_title', 'title', 'author', 'authors', 'genre', 'tags', 'tag_name', 'description'),
-            normalize_output=True,
+            include_score=False,
+            fallback_books=book_data,
         )
 
         print(f"Tìm thấy {len(results)} kết quả cho '{query}'")
@@ -716,3 +783,230 @@ def find_books_by_query(query):
     except Exception as e:
         print(f"Lỗi khi tìm kiếm: {e}")
         return [], f"Lỗi hệ thống khi tìm kiếm: {e}"
+
+
+def _to_text(value, default=''):
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text if text else default
+
+
+def _to_number(value, default=0.0):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if pd.isna(number):
+        return float(default)
+    return number
+
+
+def _to_int(value, default=0):
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return int(default)
+    return number
+
+
+def _to_tags(value):
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        tags = [str(item).strip() for item in value if str(item).strip()]
+        return tags
+
+    raw = str(value).strip()
+    if not raw:
+        return []
+
+    clean = raw.replace('[', '').replace(']', '').replace('"', '').replace("'", '')
+    return [tag.strip() for tag in clean.split(',') if tag.strip()]
+
+
+def _ratings_breakdown(avg_star, num_rating):
+    total = max(0, _to_int(num_rating, default=0))
+    score = _to_number(avg_star, default=0.0)
+
+    ratings = [0, 0, 0, 0, 0]
+    if total <= 0:
+        return ratings
+
+    dominant_star = max(1, min(5, int(round(score)) or 1))
+    ratings[dominant_star - 1] = total
+    return ratings
+
+
+def _book_entity_from_record(record):
+    book_id_value = record.get('book_id', record.get('work_id'))
+    book_id_raw = _to_text(book_id_value)
+    if book_id_raw.isdigit():
+        book_id = int_to_guid_hex(book_id_raw)
+    else:
+        book_id = book_id_raw
+    title = _to_text(record.get('book_title', record.get('title', record.get('original_title'))), default='Unknown Title')
+    author = _to_text(record.get('author', record.get('authors')), default='Unknown Author')
+
+    tags = _to_tags(record.get('genre', record.get('tags')))
+    if not tags:
+        tags = ['General']
+
+    avg_star = _to_number(record.get('avg_star', record.get('average_rating')), default=0.0)
+    num_rating = max(0, _to_int(record.get('num_rating', record.get('total_ratings_count')), default=0))
+    ratings_1, ratings_2, ratings_3, ratings_4, ratings_5 = _ratings_breakdown(avg_star, num_rating)
+
+    price = _to_number(record.get('price'), default=50000.0)
+    if price <= 0:
+        price = 50000.0
+
+    pages = max(1, _to_int(record.get('pages'), default=320))
+    read_time = max(1, _to_int(record.get('readTime'), default=pages * 2))
+    chapters = max(1, _to_int(record.get('chapters'), default=max(1, pages // 20)))
+
+    language_code = _to_text(record.get('language_code'), default='eng')
+    image_url = _to_text(record.get('image_url', record.get('image_path')), default='')
+
+    year_value = record.get('original_publication_year')
+    year = _to_int(year_value, default=0) if year_value is not None and str(year_value).strip() != '' else None
+    if year is not None and year <= 0:
+        year = None
+
+    description = _to_text(
+        record.get('description'),
+        default=f"{title} by {author}.",
+    )
+    long_description = _to_text(
+        record.get('longDescription', record.get('long_description')),
+        default=description,
+    )
+
+    return {
+        'book_id': book_id,
+        'authors': author,
+        'original_title': title,
+        'language_code': language_code,
+        'original_publication_year': year,
+        'tags': tags,
+        'ratings_1': ratings_1,
+        'ratings_2': ratings_2,
+        'ratings_3': ratings_3,
+        'ratings_4': ratings_4,
+        'ratings_5': ratings_5,
+        'image_url': image_url,
+        'small_image_url': image_url,
+        'price': float(price),
+        'mood': _to_text(record.get('mood')),
+        'badges': record.get('badges') if isinstance(record.get('badges'), list) else [],
+        'description': description,
+        'longDescription': long_description,
+        'pages': pages,
+        'readTime': read_time,
+        'status': _to_text(record.get('status'), default='complete'),
+        'chapters': chapters,
+        'previewText': _to_text(record.get('previewText', record.get('preview_text'))),
+        'accentColor': _to_text(record.get('accentColor', record.get('accent_color'))),
+    }
+
+
+def list_books_for_frontend(
+    page_number=1,
+    page_size=40,
+    search_term=None,
+    genre=None,
+    sort_by=None,
+    sort_order=None,
+):
+    page = max(1, _to_int(page_number, default=1))
+    size = max(1, min(200, _to_int(page_size, default=40)))
+
+    if book_data.empty:
+        return {
+            'pageNumber': page,
+            'pageSize': size,
+            'totalCount': 0,
+            'items': [],
+        }
+
+    data = book_data.copy()
+
+    normalized_search = _to_text(search_term)
+    if normalized_search:
+        mask = pd.Series(False, index=data.index)
+        for column in ('book_title', 'author', 'genre'):
+            if column in data.columns:
+                mask = mask | data[column].astype(str).str.contains(
+                    normalized_search,
+                    case=False,
+                    na=False,
+                    regex=False,
+                )
+        data = data[mask]
+
+    normalized_genre = _to_text(genre)
+    if normalized_genre and 'genre' in data.columns:
+        data = data[
+            data['genre'].astype(str).str.contains(
+                normalized_genre,
+                case=False,
+                na=False,
+                regex=False,
+            )
+        ]
+
+    normalized_sort = _to_text(sort_by).lower()
+    normalized_order = _to_text(sort_order).lower()
+    descending = normalized_order == 'desc'
+
+    if normalized_sort in {'popularity', 'trending_7d', 'trending_30d', 'num_rating'}:
+        data = data.sort_values(by=['num_rating', 'avg_star'], ascending=[not descending, not descending])
+    elif normalized_sort in {'rating', 'avg_star'}:
+        data = data.sort_values(by=['avg_star', 'num_rating'], ascending=[not descending, not descending])
+    elif normalized_sort in {'price', 'price_asc', 'price_desc'}:
+        price_desc = normalized_sort == 'price_desc' or descending
+        data = data.sort_values(by=['price', 'num_rating'], ascending=[not price_desc, False])
+    elif normalized_sort in {'title', 'book_title'}:
+        data = data.sort_values(by=['book_title'], ascending=[not descending])
+
+    total_count = int(len(data))
+    start = (page - 1) * size
+    end = start + size
+    page_frame = data.iloc[start:end]
+
+    items = [_book_entity_from_record(record) for record in _records(page_frame)]
+
+    return {
+        'pageNumber': page,
+        'pageSize': size,
+        'totalCount': total_count,
+        'items': items,
+    }
+
+
+def get_book_detail_for_frontend(book_id):
+    normalized_book_id = _to_text(book_id)
+    if not normalized_book_id:
+        return None, 'Thiếu tham số book_id.', 400
+
+    decoded = guid_hex_to_int(normalized_book_id)
+    if decoded is not None:
+        normalized_book_id = str(decoded)
+
+    if book_data.empty:
+        return None, f'Không tìm thấy sách với book_id: {normalized_book_id}.', 404
+
+    id_series = book_data['book_id'].astype(str).str.strip()
+    matches = book_data[id_series == normalized_book_id]
+
+    if matches.empty:
+        return None, f'Không tìm thấy sách với book_id: {normalized_book_id}.', 404
+
+    record = _records(matches.head(1))[0]
+    return _book_entity_from_record(record), None, 200
+
+
+def get_popular_book_entities(count=8):
+    limit = _clamp_limit(count, default=8, minimum=1, maximum=50)
+    records = get_popular_books(limit)
+    return [_book_entity_from_record(record) for record in records]

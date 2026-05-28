@@ -1,6 +1,11 @@
 # app/core/config.py
 import os
 
+
+def _is_truthy(value) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Config:
     """
     Lớp cấu hình cơ sở cho ứng dụng.
@@ -10,10 +15,10 @@ class Config:
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = 'Lax'
     SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', 'false').lower() == 'true'
-    
-    # Bật/tắt chế độ debug
-    DEBUG = os.environ.get('FLASK_DEBUG', True)
-    
+
+    # Bật/tắt chế độ debug (ưu tiên DEBUG, fallback FLASK_DEBUG).
+    DEBUG = _is_truthy(os.environ.get('DEBUG', os.environ.get('FLASK_DEBUG', 'false')))
+
     # Tắt theo dõi (tracking) thay đổi của SQLAlchemy, giảm tải
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 

@@ -4,6 +4,7 @@ httpx
 Jinja2
 python-dotenv
 pandas
+pymssql
 pyspark
 scikit-learn
 scipy

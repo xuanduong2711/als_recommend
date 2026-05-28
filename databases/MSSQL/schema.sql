@@ -1,125 +1,165 @@
--- 1. TẠO DATABASE
-CREATE DATABASE book_app_db;
+-- BookRecDb schema aligned with EF Core AppDbContext.
+-- Tables expected in SQL Server Object Explorer:
+-- dbo.__EFMigrationsHistory, dbo.Books, dbo.Ratings, dbo.Reviews,
+-- dbo.TrackingEvents, dbo.UserBooks, dbo.Users, dbo.Wishlists.
+
+IF DB_ID(N'BookRecDb') IS NULL
+BEGIN
+    CREATE DATABASE [BookRecDb];
+END
 GO
 
--- 2. SỬ DỤNG DATABASE
-USE book_app_db;
+USE [BookRecDb];
 GO
 
--- 3. BẢNG USERS
--- Lưu thông tin người dùng. 'user_id' từ CSV được dùng làm PK.
--- Trong app thực tế, bạn sẽ có 'email', 'password_hash', v.v.
-CREATE TABLE Users (
-    user_id INT NOT NULL PRIMARY KEY,
+IF OBJECT_ID(N'[dbo].[Wishlists]', N'U') IS NOT NULL DROP TABLE [dbo].[Wishlists];
+IF OBJECT_ID(N'[dbo].[UserBooks]', N'U') IS NOT NULL DROP TABLE [dbo].[UserBooks];
+IF OBJECT_ID(N'[dbo].[TrackingEvents]', N'U') IS NOT NULL DROP TABLE [dbo].[TrackingEvents];
+IF OBJECT_ID(N'[dbo].[Reviews]', N'U') IS NOT NULL DROP TABLE [dbo].[Reviews];
+IF OBJECT_ID(N'[dbo].[Ratings]', N'U') IS NOT NULL DROP TABLE [dbo].[Ratings];
+IF OBJECT_ID(N'[dbo].[Users]', N'U') IS NOT NULL DROP TABLE [dbo].[Users];
+IF OBJECT_ID(N'[dbo].[Books]', N'U') IS NOT NULL DROP TABLE [dbo].[Books];
+GO
 
-    username NVARCHAR(255) UNIQUE,
-    created_at DATETIME DEFAULT GETDATE()
+CREATE TABLE [dbo].[Books] (
+    [book_id] UNIQUEIDENTIFIER NOT NULL,
+    [authors] NVARCHAR(MAX) NOT NULL,
+    [original_publication_year] FLOAT NULL,
+    [original_title] NVARCHAR(MAX) NOT NULL,
+    [language_code] NVARCHAR(MAX) NOT NULL,
+    [tags] NVARCHAR(MAX) NOT NULL,
+    [ratings_1] INT NOT NULL CONSTRAINT [DF_Books_ratings_1] DEFAULT 0,
+    [ratings_2] INT NOT NULL CONSTRAINT [DF_Books_ratings_2] DEFAULT 0,
+    [ratings_3] INT NOT NULL CONSTRAINT [DF_Books_ratings_3] DEFAULT 0,
+    [ratings_4] INT NOT NULL CONSTRAINT [DF_Books_ratings_4] DEFAULT 0,
+    [ratings_5] INT NOT NULL CONSTRAINT [DF_Books_ratings_5] DEFAULT 0,
+    [image_url] NVARCHAR(MAX) NOT NULL,
+    [small_image_url] NVARCHAR(MAX) NOT NULL,
+    [price] DECIMAL(18, 2) NOT NULL CONSTRAINT [DF_Books_price] DEFAULT 0,
+    [mood] NVARCHAR(MAX) NULL,
+    [badge] NVARCHAR(MAX) NULL,
+    [description] NVARCHAR(MAX) NULL,
+    [longDescription] NVARCHAR(MAX) NULL,
+    [pages] INT NOT NULL CONSTRAINT [DF_Books_pages] DEFAULT 0,
+    [readTime] INT NOT NULL CONSTRAINT [DF_Books_readTime] DEFAULT 0,
+    [status] NVARCHAR(MAX) NULL,
+    [chapters] INT NOT NULL CONSTRAINT [DF_Books_chapters] DEFAULT 0,
+    [previewText] NVARCHAR(MAX) NULL,
+    [accentColor] NVARCHAR(MAX) NULL,
+    [badges] NVARCHAR(MAX) NOT NULL CONSTRAINT [DF_Books_badges] DEFAULT N'[]',
+    [views_7d] INT NOT NULL CONSTRAINT [DF_Books_views_7d] DEFAULT 0,
+    [favorite_7d] INT NOT NULL CONSTRAINT [DF_Books_favorite_7d] DEFAULT 0,
+    [purchases_7d] INT NOT NULL CONSTRAINT [DF_Books_purchases_7d] DEFAULT 0,
+    [views_30d] INT NOT NULL CONSTRAINT [DF_Books_views_30d] DEFAULT 0,
+    [favorite_30d] INT NOT NULL CONSTRAINT [DF_Books_favorite_30d] DEFAULT 0,
+    [purchases_30d] INT NOT NULL CONSTRAINT [DF_Books_purchases_30d] DEFAULT 0,
+    [total_ratings] INT NOT NULL CONSTRAINT [DF_Books_total_ratings] DEFAULT 0,
+    [average_rating] FLOAT NOT NULL CONSTRAINT [DF_Books_average_rating] DEFAULT 0,
+    CONSTRAINT [PK_Books] PRIMARY KEY ([book_id])
 );
 GO
 
--- 4. BẢNG AUTHORS
--- Lưu thông tin tác giả.
-CREATE TABLE Authors (
-    author_id INT NOT NULL PRIMARY KEY IDENTITY(1,1),
-    name NVARCHAR(500) NOT NULL
-    -- Thêm index để tìm kiếm tên nhanh hơn
-    --CREATE UNIQUE INDEX idx_author_name ON Authors(name);
+CREATE TABLE [dbo].[Users] (
+    [user_id] UNIQUEIDENTIFIER NOT NULL CONSTRAINT [DF_Users_user_id] DEFAULT NEWID(),
+    [user_name] NVARCHAR(MAX) NOT NULL,
+    [email] NVARCHAR(MAX) NOT NULL,
+    [hashed_password] NVARCHAR(MAX) NOT NULL,
+    [full_name] NVARCHAR(MAX) NOT NULL CONSTRAINT [DF_Users_full_name] DEFAULT N'',
+    [role] NVARCHAR(MAX) NOT NULL,
+    [sex] NVARCHAR(MAX) NULL,
+    [current_balance] DECIMAL(18, 2) NOT NULL CONSTRAINT [DF_Users_current_balance] DEFAULT 0,
+    CONSTRAINT [PK_Users] PRIMARY KEY ([user_id])
 );
 GO
 
--- 5. BẢNG TAGS
--- Lưu thông tin các tag (thể loại).
-CREATE TABLE Tags (
-    tag_id INT NOT NULL PRIMARY KEY, -- Lấy từ 'tags.csv'
-    tag_name NVARCHAR(500) NOT NULL
-    --CREATE UNIQUE INDEX idx_tag_name ON Tags(tag_name);
+CREATE TABLE [dbo].[Ratings] (
+    [user_id] UNIQUEIDENTIFIER NOT NULL,
+    [book_id] UNIQUEIDENTIFIER NOT NULL,
+    [rating] INT NOT NULL,
+    [time] DATETIME2 NOT NULL CONSTRAINT [DF_Ratings_time] DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT [PK_Ratings] PRIMARY KEY ([user_id], [book_id]),
+    CONSTRAINT [CK_Ratings_rating_Range] CHECK ([rating] >= 1 AND [rating] <= 5),
+    CONSTRAINT [FK_Ratings_Books_book_id] FOREIGN KEY ([book_id]) REFERENCES [dbo].[Books] ([book_id]) ON DELETE CASCADE,
+    CONSTRAINT [FK_Ratings_Users_user_id] FOREIGN KEY ([user_id]) REFERENCES [dbo].[Users] ([user_id]) ON DELETE CASCADE
 );
 GO
+CREATE INDEX [IX_Ratings_book_id] ON [dbo].[Ratings] ([book_id]);
+CREATE INDEX [IX_Ratings_time] ON [dbo].[Ratings] ([time]);
+GO
 
--- 6. BẢNG WORKS
--- Lưu thông tin "Tác phẩm" (khái niệm trừu tượng, nhóm các phiên bản)
-CREATE TABLE Works (
-    work_id INT NOT NULL PRIMARY KEY, -- Lấy từ 'books.csv'
-    original_title NVARCHAR(MAX),
-    original_publication_year INT,
-    
-    -- Các cột này sẽ được ETL cập nhật từ 'books.csv'
-    average_rating DECIMAL(3, 2),
-    work_ratings_count BIGINT,
-    work_text_reviews_count BIGINT
+CREATE TABLE [dbo].[Reviews] (
+    [id] UNIQUEIDENTIFIER NOT NULL CONSTRAINT [DF_Reviews_id] DEFAULT NEWID(),
+    [user_id] UNIQUEIDENTIFIER NOT NULL,
+    [book_id] UNIQUEIDENTIFIER NOT NULL,
+    [review] NVARCHAR(MAX) NOT NULL,
+    [time] DATETIME2 NOT NULL CONSTRAINT [DF_Reviews_time] DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT [PK_Reviews] PRIMARY KEY ([id]),
+    CONSTRAINT [FK_Reviews_Books_book_id] FOREIGN KEY ([book_id]) REFERENCES [dbo].[Books] ([book_id]) ON DELETE CASCADE,
+    CONSTRAINT [FK_Reviews_Users_user_id] FOREIGN KEY ([user_id]) REFERENCES [dbo].[Users] ([user_id]) ON DELETE CASCADE
 );
 GO
+CREATE INDEX [IX_Reviews_book_id] ON [dbo].[Reviews] ([book_id]);
+CREATE INDEX [IX_Reviews_user_id] ON [dbo].[Reviews] ([user_id]);
+CREATE INDEX [IX_Reviews_time] ON [dbo].[Reviews] ([time]);
+GO
 
--- 7. BẢNG EDITIONS (SẢN PHẨM)
--- Đây là "Sản phẩm" bạn bán. 'book_id' từ 'books.csv' là PK.
-CREATE TABLE Editions (
-    edition_id INT NOT NULL PRIMARY KEY, -- Lấy từ 'book_id'
-    work_id INT NOT NULL,
-    title NVARCHAR(MAX),
-    isbn VARCHAR(10),
-    isbn13 VARCHAR(13),
-    image_url NVARCHAR(1000),
-    small_image_url NVARCHAR(1000),
-    language_code VARCHAR(10),
-    
-    -- Các cột này dành cho app bán sách của bạn
-    price DECIMAL(10, 2) DEFAULT 0.00,
-    stock_quantity INT DEFAULT 0,
-    
-    CONSTRAINT FK_Edition_Work FOREIGN KEY (work_id) REFERENCES Works(work_id)
+CREATE TABLE [dbo].[TrackingEvents] (
+    [id] UNIQUEIDENTIFIER NOT NULL CONSTRAINT [DF_TrackingEvents_id] DEFAULT NEWID(),
+    [user_id] UNIQUEIDENTIFIER NOT NULL,
+    [event_type] NVARCHAR(MAX) NOT NULL,
+    [book_id] UNIQUEIDENTIFIER NOT NULL,
+    [created_at] DATETIME2 NOT NULL CONSTRAINT [DF_TrackingEvents_created_at] DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT [PK_TrackingEvents] PRIMARY KEY ([id]),
+    CONSTRAINT [FK_TrackingEvents_Books_book_id] FOREIGN KEY ([book_id]) REFERENCES [dbo].[Books] ([book_id]) ON DELETE CASCADE,
+    CONSTRAINT [FK_TrackingEvents_Users_user_id] FOREIGN KEY ([user_id]) REFERENCES [dbo].[Users] ([user_id]) ON DELETE CASCADE
 );
 GO
--- Index để tìm tất cả phiên bản của 1 tác phẩm
-CREATE INDEX idx_edition_work_id ON Editions(work_id);
+CREATE INDEX [IX_TrackingEvents_book_id] ON [dbo].[TrackingEvents] ([book_id]);
+CREATE INDEX [IX_TrackingEvents_user_id] ON [dbo].[TrackingEvents] ([user_id]);
+CREATE INDEX [IX_TrackingEvents_created_at] ON [dbo].[TrackingEvents] ([created_at]);
 GO
 
--- 8. BẢNG CẦU NỐI (BRIDGE TABLES) CHO QUAN HỆ M-M
-
--- Nối Works và Authors (Nhiều Tác giả viết Nhiều Tác phẩm)
-CREATE TABLE Work_Authors_Bridge (
-    work_id INT NOT NULL,
-    author_id INT NOT NULL,
-    PRIMARY KEY (work_id, author_id),
-    CONSTRAINT FK_WA_Work FOREIGN KEY (work_id) REFERENCES Works(work_id),
-    CONSTRAINT FK_WA_Author FOREIGN KEY (author_id) REFERENCES Authors(author_id)
+CREATE TABLE [dbo].[UserBooks] (
+    [id] UNIQUEIDENTIFIER NOT NULL CONSTRAINT [DF_UserBooks_id] DEFAULT NEWID(),
+    [book_id] UNIQUEIDENTIFIER NOT NULL,
+    [user_id] UNIQUEIDENTIFIER NOT NULL,
+    [purchase_price] DECIMAL(18, 2) NOT NULL CONSTRAINT [DF_UserBooks_purchase_price] DEFAULT 0,
+    [purchase_date] DATETIME2 NOT NULL CONSTRAINT [DF_UserBooks_purchase_date] DEFAULT SYSUTCDATETIME(),
+    [current_chapter] INT NOT NULL CONSTRAINT [DF_UserBooks_current_chapter] DEFAULT 0,
+    [last_read_at] DATETIME2 NULL,
+    CONSTRAINT [PK_UserBooks] PRIMARY KEY ([id]),
+    CONSTRAINT [FK_UserBooks_Books_book_id] FOREIGN KEY ([book_id]) REFERENCES [dbo].[Books] ([book_id]) ON DELETE CASCADE,
+    CONSTRAINT [FK_UserBooks_Users_user_id] FOREIGN KEY ([user_id]) REFERENCES [dbo].[Users] ([user_id]) ON DELETE CASCADE
 );
 GO
-
--- Nối Editions và Tags (Nhiều Phiên bản có Nhiều Tag)
-CREATE TABLE Edition_Tags_Bridge (
-    edition_id INT NOT NULL,
-    tag_id INT NOT NULL,
-    [count] INT, -- Lấy từ 'book_tags.csv'
-    PRIMARY KEY (edition_id, tag_id),
-    CONSTRAINT FK_ET_Edition FOREIGN KEY (edition_id) REFERENCES Editions(edition_id),
-    CONSTRAINT FK_ET_Tag FOREIGN KEY (tag_id) REFERENCES Tags(tag_id)
-);
+CREATE INDEX [IX_UserBooks_book_id] ON [dbo].[UserBooks] ([book_id]);
+CREATE INDEX [IX_UserBooks_user_id] ON [dbo].[UserBooks] ([user_id]);
+CREATE UNIQUE INDEX [IX_UserBooks_user_id_book_id] ON [dbo].[UserBooks] ([user_id], [book_id]);
 GO
 
--- 9. BẢNG TƯƠNG TÁC (INTERACTIONS)
-
--- Bảng USER_RATINGS (Từ 'ratings.csv')
--- Đây là tín hiệu "Explicit" (rõ ràng)
-CREATE TABLE User_Ratings (
-    user_id INT NOT NULL,
-    edition_id INT NOT NULL, -- Tham chiếu đến 'book_id'
-    rating INT NOT NULL CHECK (rating >= 1 AND rating <= 5),
-    created_at DATETIME DEFAULT GETDATE(),
-    PRIMARY KEY (user_id, edition_id),
-    CONSTRAINT FK_Rating_User FOREIGN KEY (user_id) REFERENCES Users(user_id),
-    CONSTRAINT FK_Rating_Edition FOREIGN KEY (edition_id) REFERENCES Editions(edition_id)
+CREATE TABLE [dbo].[Wishlists] (
+    [id] UNIQUEIDENTIFIER NOT NULL CONSTRAINT [DF_Wishlists_id] DEFAULT NEWID(),
+    [book_id] UNIQUEIDENTIFIER NOT NULL,
+    [user_id] UNIQUEIDENTIFIER NOT NULL,
+    [added_at] DATETIME2 NOT NULL CONSTRAINT [DF_Wishlists_added_at] DEFAULT SYSUTCDATETIME(),
+    [price_at_addition] DECIMAL(18, 2) NOT NULL CONSTRAINT [DF_Wishlists_price_at_addition] DEFAULT 0,
+    [collection_name] NVARCHAR(MAX) NULL,
+    CONSTRAINT [PK_Wishlists] PRIMARY KEY ([id]),
+    CONSTRAINT [FK_Wishlists_Books_book_id] FOREIGN KEY ([book_id]) REFERENCES [dbo].[Books] ([book_id]) ON DELETE CASCADE,
+    CONSTRAINT [FK_Wishlists_Users_user_id] FOREIGN KEY ([user_id]) REFERENCES [dbo].[Users] ([user_id]) ON DELETE CASCADE
 );
 GO
-
--- Bảng USER_WISHLIST (Từ 'to_read.csv')
--- Đây là tín hiệu "Implicit" (ngầm)
-CREATE TABLE User_Wishlist (
-    user_id INT NOT NULL,
-    edition_id INT NOT NULL, -- Tham chiếu đến 'book_id'
-    added_at DATETIME DEFAULT GETDATE(),
-    PRIMARY KEY (user_id, edition_id),
-    CONSTRAINT FK_Wishlist_User FOREIGN KEY (user_id) REFERENCES Users(user_id),
-    CONSTRAINT FK_Wishlist_Edition FOREIGN KEY (edition_id) REFERENCES Editions(edition_id)
-);
+CREATE INDEX [IX_Wishlists_book_id] ON [dbo].[Wishlists] ([book_id]);
+CREATE INDEX [IX_Wishlists_user_id] ON [dbo].[Wishlists] ([user_id]);
+CREATE UNIQUE INDEX [IX_Wishlists_user_id_book_id] ON [dbo].[Wishlists] ([user_id], [book_id]);
 GO
 
+IF OBJECT_ID(N'[dbo].[__EFMigrationsHistory]', N'U') IS NULL
+BEGIN
+    CREATE TABLE [dbo].[__EFMigrationsHistory] (
+        [MigrationId] NVARCHAR(150) NOT NULL,
+        [ProductVersion] NVARCHAR(32) NOT NULL,
+        CONSTRAINT [PK___EFMigrationsHistory] PRIMARY KEY ([MigrationId])
+    );
+END
+GO
