@@ -3,9 +3,12 @@
 
 # Keep this file tracked
 !.gitignore
+!api_plan.md
 
 # Keep only requested paths/files
 !requirements.txt
+!book_rec_api/
+!book_rec_api/**
 !app/
 app/*
 !app/api/
