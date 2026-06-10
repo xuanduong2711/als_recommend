@@ -14,5 +14,5 @@ pyarrow
 adjustText
 matplotlib>=3.5.0
 seaborn
-elasticsearch
+elasticsearch>=8,<9
 pytest

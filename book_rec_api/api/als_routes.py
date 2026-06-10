@@ -1,95 +1,105 @@
 from __future__ import annotations
 
-import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
+import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from ..serving import ALSServingModel
+from .schema import canonical_item
 
-ARTIFACT_PATH = ROOT / "book_rec_api" / "artifacts" / "model_als.pkl"
+
+HERE = Path(__file__).resolve().parent
+ARTIFACT_PATH = (HERE.parent / "artifacts" / "model_als.pkl").resolve()
+BOOKS_CATALOG_PATH = (HERE.parents[2] / "database_data" / "books.csv").resolve()
 
 router = APIRouter()
 
 
 @lru_cache(maxsize=1)
-def _load_als_model() -> Any:
+def _load_books_catalog(path: str) -> dict[str, dict[str, Any]]:
+    df = pd.read_csv(path, sep=";", dtype=str, low_memory=False)
+    catalog: dict[str, dict[str, Any]] = {}
+    for _, row in df.iterrows():
+        book_id = row.get("book_id", "")
+        if book_id:
+            catalog[book_id] = row.dropna().to_dict()
+    return catalog
+
+
+def _build_item(book_id: str, catalog: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    meta = catalog.get(book_id, {})
+    if meta:
+        return canonical_item(meta)
+    return canonical_item({"book_id": book_id})
+
+
+@lru_cache(maxsize=2)
+def _load_als_model_cached(
+    path_value: str,
+    modified_ns: int,
+    size: int,
+) -> ALSServingModel:
+    del modified_ns, size
+    return ALSServingModel.load(path_value)
+
+
+def _load_als_model() -> ALSServingModel:
     path = ARTIFACT_PATH
     if not path.exists():
         raise HTTPException(
             status_code=503,
-            detail={"code": "service_unavailable", "message": f"ALS artifact not found: {path}"},
+            detail={
+                "code": "service_unavailable",
+                "message": f"ALS artifact not found: {path}",
+            },
         )
-    if path.stat().st_size == 0:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "service_unavailable", "message": "ALS artifact is empty"},
-        )
-    import pickle
-
-    try:
-        with path.open("rb") as f:
-            model = pickle.load(f)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "service_unavailable", "message": f"Failed to load ALS artifact: {exc}"},
-        )
-
-    if not callable(getattr(model, "recommend_for_user", None)):
+    stat = path.stat()
+    if stat.st_size == 0:
         raise HTTPException(
             status_code=503,
             detail={
                 "code": "service_unavailable",
-                "message": f"ALS artifact ({type(model).__name__}) has no recommend_for_user()",
+                "message": "ALS artifact is empty",
             },
         )
-    return model
-
-
-def _normalize(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    results = []
-    for r in items:
-        item = {
-            "book_id": str(r.get("book_id") or r.get("work_id", "")),
-            "work_id": str(r.get("work_id") or r.get("book_id", "")),
-            "title": r.get("book_title") or r.get("title"),
-            "author": r.get("author") or r.get("authors"),
-        }
-        score = r.get("pred_rating") or r.get("score")
-        if score is not None:
-            item["score"] = round(float(score), 4)
-        for field in ("image_url", "avg_star", "num_rating"):
-            if field in r and r[field] is not None:
-                item[field] = r[field]
-        results.append(item)
-    return results
+    try:
+        return _load_als_model_cached(
+            str(path),
+            stat.st_mtime_ns,
+            stat.st_size,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "service_unavailable",
+                "message": f"Failed to load ALS artifact: {exc}",
+            },
+        ) from exc
 
 
 @router.get("/recommend/als/{user_id}")
-def recommend_als(user_id: int, limit: int = Query(10, ge=1, le=50)):
+def recommend_als(user_id: UUID, limit: int = Query(10, ge=1, le=50)):
+    user_id_value = str(user_id)
     model = _load_als_model()
     try:
-        recs = model.recommend_for_user(user_id, num_items=limit)
+        source = model.source_for_user(user_id_value)
+        recs = model.recommend_for_user(user_id_value, num_items=limit)
     except KeyError as exc:
         raise HTTPException(
             status_code=404,
             detail={"code": "not_found", "message": str(exc)},
-        )
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=500,
             detail={"code": "internal_error", "message": str(exc)},
-        )
-    if hasattr(recs, "to_dict"):
-        rows = recs.to_dict("records")
-    elif hasattr(recs, "collect"):
-        rows = [row.asDict() for row in recs.collect()]
-    else:
-        rows = list(recs)[:limit]
-    items = _normalize(rows)
-    return {"source": "als", "query": {"user_id": user_id, "limit": limit}, "items": items}
+        ) from exc
+
+    rows = recs.to_dict("records") if hasattr(recs, "to_dict") else list(recs)[:limit]
+    catalog = _load_books_catalog(str(BOOKS_CATALOG_PATH))
+    return [_build_item(str(r.get("book_id") or r.get("work_id", "")), catalog) for r in rows]

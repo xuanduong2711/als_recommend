@@ -54,7 +54,7 @@ except ModuleNotFoundError:
     fuzz = _FallbackFuzz()
 
 
-TRANSFORMED_BOOKS_PATH = "data/book_features_dataset"
+TRANSFORMED_BOOKS_PATH = "data/mssql_feature_store/items_features.parquet"
 DEFAULT_ELASTICSEARCH_URL = "http://localhost:9200"
 DEFAULT_INDEX_NAME = "books"
 DEFAULT_SEARCH_LIMIT = 20
@@ -62,6 +62,7 @@ MAX_SEARCH_LIMIT = 50
 BOOK_FIELDS = (
     "work_id",
     "book_id",
+    "original_title",
     "title",
     "book_title",
     "authors",
@@ -70,6 +71,7 @@ BOOK_FIELDS = (
     "average_rating",
     "avg_star",
     "total_ratings_count",
+    "total_ratings",
     "num_rating",
     "image_url",
     "image_path",
@@ -260,7 +262,13 @@ def _load_transformed_books_cached(path: str) -> pd.DataFrame:
         if not file_path.name.startswith(".")
     )
     if csv_files:
-        frames = [pd.read_csv(file_path, on_bad_lines="skip") for file_path in csv_files]
+        frames = [pd.read_csv(
+                file_path,
+                sep=None,
+                engine="python",
+                encoding="utf-8-sig",
+                on_bad_lines="skip",
+            ) for file_path in csv_files]
         return pd.concat(frames, ignore_index=True)
 
     raise FileNotFoundError(f"No CSV or parquet files found in {data_path}")
@@ -273,19 +281,33 @@ def normalize_book_record(record: Mapping[str, Any]) -> dict[str, Any]:
         for key, value in dict(record).items()
     }
 
-    if "book_id" not in result and "work_id" in result:
+    if not result.get("book_id") and result.get("work_id"):
         result["book_id"] = result.get("work_id")
-    if "book_title" not in result and "title" in result:
-        result["book_title"] = result.get("title")
-    if "author" not in result and "authors" in result:
+    if not result.get("work_id") and result.get("book_id"):
+        result["work_id"] = result.get("book_id")
+
+    title = result.get("original_title") or result.get("book_title") or result.get("title")
+    if title:
+        result["original_title"] = title
+        result["book_title"] = title
+        result["title"] = title
+
+    if not result.get("author") and result.get("authors"):
         result["author"] = result.get("authors")
-    if "image_path" not in result and "image_url" in result:
+    if not result.get("authors") and result.get("author"):
+        result["authors"] = result.get("author")
+    if not result.get("image_path") and result.get("image_url"):
         result["image_path"] = result.get("image_url")
-    if "avg_star" not in result and "average_rating" in result:
+    if result.get("avg_star") is None and result.get("average_rating") is not None:
         result["avg_star"] = _to_float(result.get("average_rating"))
-    if "num_rating" not in result and "total_ratings_count" in result:
-        result["num_rating"] = _to_int(result.get("total_ratings_count"))
-    if "genre" not in result and "tags" in result:
+    total_ratings = result.get("total_ratings_count")
+    if total_ratings is None:
+        total_ratings = result.get("total_ratings")
+    if result.get("num_rating") is None and total_ratings is not None:
+        result["num_rating"] = _to_int(total_ratings)
+    if result.get("total_ratings_count") is None and total_ratings is not None:
+        result["total_ratings_count"] = _to_int(total_ratings)
+    if not result.get("genre") and result.get("tags"):
         result["genre"] = _format_tags(result.get("tags"))
 
     result.setdefault("price", None)
@@ -300,6 +322,7 @@ def create_client(
     password: str | None = None,
     request_timeout: int = 30,
     verify_certs: bool | None = None,
+    ca_certs: str | None = None,
 ) -> Elasticsearch:
     """Create an Elasticsearch client from arguments or environment values."""
     url = url or os.environ.get("ELASTICSEARCH_URL", DEFAULT_ELASTICSEARCH_URL)
@@ -307,6 +330,7 @@ def create_client(
     username = username or os.environ.get("ELASTICSEARCH_USERNAME")
     password = password or os.environ.get("ELASTICSEARCH_PASSWORD")
     verify_certs = _env_bool("ELASTICSEARCH_VERIFY_CERTS", True) if verify_certs is None else verify_certs
+    ca_certs = ca_certs or os.environ.get("ELASTICSEARCH_CA_CERTS")
 
     client_options: dict[str, Any] = {
         "request_timeout": request_timeout,
@@ -316,6 +340,8 @@ def create_client(
         client_options["api_key"] = api_key
     elif username and password:
         client_options["basic_auth"] = (username, password)
+    if ca_certs:
+        client_options["ca_certs"] = ca_certs
 
     return Elasticsearch(url, **client_options)
 
@@ -425,8 +451,6 @@ def search_books_elasticsearch(
             include_score=include_score,
         )
     except Exception:
-        if elasticsearch_error is not None:
-            raise elasticsearch_error
         return []
 
 
@@ -658,6 +682,18 @@ def _iter_book_records(data_path: str) -> Iterable[dict[str, Any]]:
 
 def _clean_book_record(record: Mapping[str, Any]) -> dict[str, Any]:
     cleaned = {field: _clean_value(record.get(field)) for field in BOOK_FIELDS}
+    raw_title = _clean_value(record.get("original_title"))
+    if raw_title:
+        if not cleaned.get("title"):
+            cleaned["title"] = raw_title
+        if not cleaned.get("book_title"):
+            cleaned["book_title"] = raw_title
+    raw_total = _clean_value(record.get("total_ratings"))
+    if raw_total is not None:
+        if cleaned.get("num_rating") is None:
+            cleaned["num_rating"] = raw_total
+        if cleaned.get("total_ratings_count") is None:
+            cleaned["total_ratings_count"] = raw_total
     cleaned["work_id"] = _clean_text(cleaned.get("work_id"))
     cleaned["book_id"] = _clean_text(cleaned.get("book_id"))
     cleaned["title"] = _clean_text(cleaned.get("title"))
@@ -790,7 +826,13 @@ def _normalize_books_dataframe(data: pd.DataFrame) -> pd.DataFrame:
 def _read_data_file(path: Path) -> pd.DataFrame:
     suffix = path.suffix.lower()
     if suffix == ".csv":
-        return pd.read_csv(path, on_bad_lines="skip")
+        return pd.read_csv(
+            path,
+            sep=None,
+            engine="python",
+            encoding="utf-8-sig",
+            on_bad_lines="skip",
+        )
     if suffix in {".parquet", ".pq"}:
         return pd.read_parquet(path)
     raise ValueError(f"Unsupported transformed data file type: {path}")
@@ -849,6 +891,8 @@ def _to_float(value: Any) -> float | None:
     if value is None or value == "":
         return None
     try:
+        if isinstance(value, str):
+            value = value.strip().replace(",", ".")
         return float(value)
     except (TypeError, ValueError):
         return None

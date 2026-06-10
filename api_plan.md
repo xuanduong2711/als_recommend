@@ -1,331 +1,138 @@
-# API Plan
+# API Plan - Book Recommendation API
+
+Tai lieu nay mo ta contract canonical cho 4 provider chinh:
+
+- TF-IDF: goi y sach tuong tu theo noi dung.
+- ALS: goi y sach theo user history.
+- Hybrid: ket hop ALS va TF-IDF, uu tien ALS khi co user history va fallback sang TF-IDF khi can.
+- Elasticsearch: chi phuc vu truy van tim kiem full-text nhanh (`query`), khong dong vai tro recommendation.
+
+Muc tieu la cho ALS, TF-IDF, hybrid, va Elasticsearch tra ve cung mot format book object, de Frontend va Backend khong phai xu ly nhieu format khac nhau.
 
 ## Muc tieu
 
-Xay dung mot FastAPI service trong `book_rec_api/` de serve 2 kieu goi y sach:
+Runtime khong train model khi startup hoac khi nhan request. API chi load artifact da dong goi va tra ket qua inference.
 
-- `GET /recommend/als/{user_id}`: dung ALS de goi y sach theo hanh vi user.
-- `GET /recommend/tfidf/{book_id}`: dung TF-IDF de goi y sach tuong tu sach dang xem.
+## Canonical response
 
-Training code van nam o root `src/model/`. `book_rec_api/scheduler.py` chi goi lai training code do, sau do luu artifact moi vao `book_rec_api/artifacts/`. `book_rec_api/app.py` chi load artifact va tra API.
-
-## Cau truc thu muc chuan
-
-```text
-RECOMMEND_BOOK/
-|-- book_rec_api/
-|   |-- app.py
-|   |-- scheduler.py
-|   |-- requirements.txt
-|   |-- artifacts/
-|   |   |-- model_als.pkl
-|   |   +-- model_tfidf.pkl
-|   +-- api/
-|       |-- als_routes.py
-|       +-- tfidf_routes.py
-+-- src/
-    +-- model/
-        |-- als.py
-        +-- tf_idf.py
-```
-
-## Vai tro tung module
-
-| File | Vai tro |
-| --- | --- |
-| `src/model/als.py` | Code train ALS. Co the gom them ham export serving artifact cho API. |
-| `src/model/tf_idf.py` | Code train/load TF-IDF. Co ham save/load model TF-IDF. |
-| `book_rec_api/scheduler.py` | Goi code train tu `../src/model`, train xong luu model moi vao `book_rec_api/artifacts/`. |
-| `book_rec_api/app.py` | Khoi tao FastAPI, include router, load/cache model trong `artifacts/`, expose `/health`. |
-| `book_rec_api/api/als_routes.py` | Route ALS: `GET /recommend/als/{user_id}`. |
-| `book_rec_api/api/tfidf_routes.py` | Route TF-IDF: `GET /recommend/tfidf/{book_id}`. |
-| `book_rec_api/artifacts/model_als.pkl` | ALS artifact da train san de serve recommendation theo user. |
-| `book_rec_api/artifacts/model_tfidf.pkl` | TF-IDF artifact da train san de serve similar-book recommendation. |
-
-## Luong chay dung
-
-### 1. Training / refresh model
-
-`book_rec_api/scheduler.py` la noi dieu phoi train lai model:
-
-1. Import training code tu root project:
-   - `src.model.als`
-   - `src.model.tf_idf`
-2. Train ALS va TF-IDF bang data pipeline hien co.
-3. Ghi artifact moi vao:
-   - `book_rec_api/artifacts/model_als.pkl`
-   - `book_rec_api/artifacts/model_tfidf.pkl`
-4. Ghi theo cach atomic neu co the:
-   - save vao file tam `.tmp`
-   - validate file non-empty
-   - rename thanh file `.pkl` chinh
-5. Khong expose endpoint public de train model neu khong can.
-
-### 2. API runtime
-
-`book_rec_api/app.py` chi phuc vu inference:
-
-1. Khi startup hoac request dau tien, load model tu `book_rec_api/artifacts/`.
-2. Cache model trong memory, khong load lai moi request.
-3. Include 2 router:
-   - `book_rec_api.api.als_routes`
-   - `book_rec_api.api.tfidf_routes`
-4. Khi request den:
-   - ALS route goi ALS model da load.
-   - TF-IDF route goi TF-IDF model da load.
-5. API runtime khong goi `fit()`, `train_from_transform_output()`, Spark training, SQL loader, hay scheduler job.
-
-## API endpoints
-
-### ALS
-
-```http
-GET /recommend/als/{user_id}?limit=10
-```
-
-Y nghia:
-
-- Dung `book_rec_api/artifacts/model_als.pkl`.
-- Goi y sach theo hanh vi cua `user_id`.
-- `limit` optional, default `10`, nen gioi han toi da `50`.
-
-Response:
+Moi book trong output cua cac endpoint recommendation chinh phai co dung format:
 
 ```json
 {
-  "source": "als",
-  "query": {
-    "user_id": 123,
-    "limit": 10
-  },
-  "items": [
-    {
-      "book_id": "456",
-      "work_id": "456",
-      "title": "Example Book",
-      "author": "Example Author",
-      "score": 4.82
-    }
-  ]
+  "book_id": null,
+  "authors": null,
+  "original_publication_year": null,
+  "original_title": null,
+  "language_code": null,
+  "tags": [],
+  "ratings_1": null,
+  "ratings_2": null,
+  "ratings_3": null,
+  "ratings_4": null,
+  "ratings_5": null,
+  "image_url": null,
+  "small_image_url": null,
+  "price": null,
+  "mood": "[]",
+  "description": null,
+  "longDescription": null,
+  "pages": null,
+  "readTime": null,
+  "status": null,
+  "chapters": null,
+  "previewText": null,
+  "accentColor": null,
+  "total_ratings": null,
+  "average_rating": null,
+  "badges": []
 }
 ```
 
-### TF-IDF
+Quy uoc:
 
-```http
-GET /recommend/tfidf/{book_id}?limit=10
-```
+- Endpoint tra mot danh sach book object theo schema tren khi co nhieu ket qua.
+- Endpoint tra truc tiep mot book object theo schema tren khi chi co mot ket qua.
+- Khong boc output trong `pageNumber`, `pageSize`, `totalCount`, hoac `items`.
 
-Y nghia:
+## Endpoint chinh
 
-- Dung `book_rec_api/artifacts/model_tfidf.pkl`.
-- Goi y sach tuong tu voi `book_id` dang xem.
-- `limit` optional, default `10`, nen gioi han toi da `50`.
+### `GET /recommend/tfidf/{book_id}?limit=10`
 
-Response:
+- Input: `book_id` la UUID book hoac book id da chuan hoa.
+- Output: danh sach book object theo canonical schema.
+- Dung cho similar-book recommendation theo noi dung.
 
-```json
-{
-  "source": "tfidf",
-  "query": {
-    "book_id": "123",
-    "limit": 10
-  },
-  "items": [
-    {
-      "book_id": "789",
-      "work_id": "789",
-      "title": "Similar Book",
-      "author": "Another Author",
-      "score": 0.91
-    }
-  ]
-}
-```
+### `GET /recommend/als/{user_id}?limit=10`
 
-### Health
+- Input: `user_id` la UUID user hoac user id da chuan hoa.
+- Output: danh sach book object theo canonical schema.
+- Dung cho personalized recommendation theo user history.
+- Neu user moi, tra fallback danh sach phu hop thay vi fail neu co du lieu fallback.
 
-```http
-GET /health
-```
+### `GET /recommend/hybrid/{user_id}?item_id={book_id}&query={text}&limit=10`
 
-Response:
+- Input: `user_id` la user can goi y; `item_id` va `query` la ngu canh fallback khi user khong co history ro rang.
+- Output: danh sach book object theo canonical schema.
+- Dung cho truong hop muon 1 API duy nhat, uu tien ALS neu co history, fallback sang TF-IDF neu khong.
 
-```json
-{
-  "status": "ok",
-  "models": {
-    "als": {
-      "loaded": true,
-      "path": "book_rec_api/artifacts/model_als.pkl"
-    },
-    "tfidf": {
-      "loaded": true,
-      "path": "book_rec_api/artifacts/model_tfidf.pkl"
-    }
-  }
-}
-```
+### `GET /recommend/es/search?q=keyword&limit=20`
 
-## Skeleton `book_rec_api/app.py`
+- Input: `q` la keyword, `limit` gioi han ket qua.
+- Output: `list[book object]` theo canonical schema.
+- `limit` chi gioi han so phan tu trong list, khong doi shape response.
+- Elasticsearch chi duoc dung de tim kiem full-text nhanh theo query. Neu ES khong tra ra ket qua hoac gap loi, backend co the fallback sang local fuzzy search.
 
-```python
-from pathlib import Path
+## Mapping field
 
-from fastapi import FastAPI
+Payload item canonical nen lay tu cac field co san trong data/model:
 
-from book_rec_api.api.als_routes import router as als_router
-from book_rec_api.api.tfidf_routes import router as tfidf_router
+- `book_id`: id sach canonical.
+- `authors`: tu `authors` hoac `author`.
+- `original_title`: tu `original_title`, fallback `book_title` hoac `title`.
+- `language_code`: ma ngon ngu.
+- `tags`: array tag da split/clean.
+- `ratings_1` -> `ratings_5`: breakdown so luong rating.
+- `image_url` va `small_image_url`: anh bia.
+- `price`: gia sach.
+- `mood`: string hoac JSON-string, mac dinh "[]" neu khong co du lieu.
+- `description` va `longDescription`: mo ta ngan/dai.
+- `pages`, `readTime`, `chapters`: metadata doc sach.
+- `status`, `previewText`, `accentColor`: metadata UI.
+- `total_ratings`: alias cua `num_rating`.
+- `average_rating`: alias cua `avg_star`.
+- `badges`: danh sach badge.
+- Search response can dong nhat voi schema canonical; neu ES khong co data thi backend fallback truoc khi tra response.
 
+## Cac file can dong bo
 
-BASE_DIR = Path(__file__).resolve().parent
-ARTIFACTS_DIR = BASE_DIR / "artifacts"
-ALS_MODEL_PATH = ARTIFACTS_DIR / "model_als.pkl"
-TFIDF_MODEL_PATH = ARTIFACTS_DIR / "model_tfidf.pkl"
+Neu can sua implementation de khop contract, uu tien cac file sau:
 
-app = FastAPI(title="Book Recommendation API")
-app.include_router(als_router)
-app.include_router(tfidf_router)
+- `book_rec_api/api/schema.py`: khai bao schema response chung (`canonical_item()`).
+- `app/services/recommender.py`: normalize item data cho dung field names.
+- `book_rec_api/api/tfidf_routes.py`: tra response TF-IDF theo canonical schema.
+- `book_rec_api/api/als_routes.py`: tra response ALS theo canonical schema.
+- `src/model/hybrid.py`: logic hybrid ALS + TF-IDF.
+- `app/api/routes/web.py`: UI legacy cho hybrid_books, neu con giu.
+- `book_rec_api/api/es_routes.py`: router public cho Elasticsearch search API.
+- `src/search/elasticsearch_search.py`: engine search/index ES va fallback local.
 
+## Tests
 
-@app.get("/health")
-def health():
-    return {
-        "status": "ok",
-        "models": {
-            "als": {"path": str(ALS_MODEL_PATH), "exists": ALS_MODEL_PATH.exists()},
-            "tfidf": {"path": str(TFIDF_MODEL_PATH), "exists": TFIDF_MODEL_PATH.exists()},
-        },
-    }
-```
+- Unit test backend search adapter with a mocked Elasticsearch client and verify query/limit handling.
+- Unit test fallback path when ES request fails or returns empty, so search helper still returns data from fallback local source.
+- Contract test for ES endpoint shape to confirm frontend can call it as a search API and receive a plain list of canonical items.
+- Case 1: `GET /recommend/es/search?q=harry+potter&limit=3` returns a JSON array, not an envelope object.
+- Case 2: `limit` only caps array length; `limit=1` still returns a list with at most one item.
+- Case 3: typo query such as `harry poster` still returns the closest matching books when ES or fallback search can score them.
+- Case 4: empty or whitespace-only query is rejected by request validation.
+- Case 5: when ES is unavailable, endpoint still falls back to local search and returns a list if local data exists.
+- Case 6: canonical CSV fields (`book_id`, `original_title`, `total_ratings`) must be mapped to ES search aliases before indexing.
 
-## Skeleton `book_rec_api/api/als_routes.py`
+## Acceptance criteria
 
-```python
-from fastapi import APIRouter, HTTPException, Query
-
-
-router = APIRouter()
-
-
-@router.get("/recommend/als/{user_id}")
-def recommend_als(user_id: int, limit: int = Query(10, ge=1, le=50)):
-    try:
-        items = recommend_for_user(user_id=user_id, limit=limit)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    return {
-        "source": "als",
-        "query": {"user_id": user_id, "limit": limit},
-        "items": items,
-    }
-```
-
-## Skeleton `book_rec_api/api/tfidf_routes.py`
-
-```python
-from fastapi import APIRouter, HTTPException, Query
-
-
-router = APIRouter()
-
-
-@router.get("/recommend/tfidf/{book_id}")
-def recommend_tfidf(book_id: str, limit: int = Query(10, ge=1, le=50)):
-    try:
-        items = recommend_similar_books(book_id=book_id, limit=limit)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    return {
-        "source": "tfidf",
-        "query": {"book_id": book_id, "limit": limit},
-        "items": items,
-    }
-```
-
-## Skeleton `book_rec_api/scheduler.py`
-
-```python
-from pathlib import Path
-
-from src.model.als import train_als_from_transform_output
-from src.model.tf_idf import train_from_transform_output
-
-
-BASE_DIR = Path(__file__).resolve().parent
-ARTIFACTS_DIR = BASE_DIR / "artifacts"
-ALS_MODEL_PATH = ARTIFACTS_DIR / "model_als.pkl"
-TFIDF_MODEL_PATH = ARTIFACTS_DIR / "model_tfidf.pkl"
-
-
-def train_and_save_models() -> None:
-    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-
-    als_model = train_als_from_transform_output()
-    save_als_artifact(als_model, ALS_MODEL_PATH)
-
-    tfidf_model = train_from_transform_output()
-    tfidf_model.save(TFIDF_MODEL_PATH)
-```
-
-Skeleton tren chi mo ta flow. Khi implement can map dung return value hien tai cua `src/model/als.py`, vi ham train ALS co the tra tuple hoac Spark recommender thay vi object pickle-safe.
-
-## Error contract
-
-Tat ca loi API nen co shape nhat quan:
-
-```json
-{
-  "error": {
-    "code": "not_found",
-    "message": "Unknown book_id: 123"
-  }
-}
-```
-
-Status code:
-
-- `400`: query param sai, vi du `limit <= 0`.
-- `404`: khong tim thay `user_id` hoac `book_id` trong artifact.
-- `422`: FastAPI validate path/query param sai type.
-- `503`: artifact thieu, rong, hong, hoac model load fail.
-- `500`: loi runtime khong mong doi.
-
-## Nguyen tac artifact
-
-- `model_als.pkl` va `model_tfidf.pkl` phai ton tai truoc khi API serve production.
-- File artifact phai non-empty va load duoc bang loader tuong ung.
-- Scheduler duoc phep train/retrain; route API khong duoc train model.
-- ALS artifact nen la object/table pickle-safe cho inference. Neu training dung Spark, khong nen pickle live `SparkSession`.
-- TF-IDF artifact nen la fitted `ContentBasedRecommender` hoac wrapper co method `recommend(book_id, top_k=limit)`.
-
-## Command de chay
-
-Development API:
-
-```bash
-uvicorn book_rec_api.app:app --host 0.0.0.0 --port 8001 --reload
-```
-
-Manual refresh model:
-
-```bash
-python -m book_rec_api.scheduler
-```
-
-## Checklist implement
-
-1. Tao `book_rec_api/api/als_routes.py`.
-2. Tao `book_rec_api/api/tfidf_routes.py`.
-3. Tao/cap nhat `book_rec_api/app.py` de include 2 router.
-4. Tao `book_rec_api/artifacts/`.
-5. Cap nhat `book_rec_api/scheduler.py` de train tu `src/model` va save artifact.
-6. Them loader/cache rieng cho ALS va TF-IDF trong API runtime.
-7. Them tests cho:
-   - missing artifact tra `503`
-   - unknown `user_id` tra `404`
-   - unknown `book_id` tra `404`
-   - ALS route tra `source=als`
-   - TF-IDF route tra `source=tfidf`
+- Ca TF-IDF, ALS, hybrid, va Elasticsearch tra ve cung 1 shape response.
+- Moi item co du field nhu payload mau.
+- `book_rec_api/api/es_routes.py`: router public cho Elasticsearch search API.
+- `src/search/elasticsearch_search.py`: engine search/index ES va fallback local.
+- FE co the goi Elasticsearch nhu mot search API thong qua backend endpoint, khong can biet ES la engine ben trong.
+- `/health` bao `elasticsearch.available=true`, `index_exists=true`, va document count khi TLS/auth/index deu hop le; neu loi phai co field `error` de chan doan.

@@ -39,29 +39,34 @@ class HybridBookRecommender:
         query: Optional[str] = None,
         top_k: int = 10,
     ) -> Any:
-        """Return recommendations for a user or cold-start context.
+        """Return recommendations combining ALS (priority) and TF-IDF results.
 
-        Known users with ratings use ALS first. Cold-start users, missing ALS
-        models, and empty/failed ALS results fall back to TF-IDF when an
-        ``item_id`` or ``query`` is available.
+        ALS results are listed first. TF-IDF results follow, excluding any
+        books already recommended by ALS.
         """
         if top_k <= 0:
             raise ValueError("top_k must be greater than 0.")
 
-        has_fallback_input = item_id is not None or bool(query and query.strip())
+        als_results = None
         if self._can_use_als() and self.has_user_behavior(user_id):
             try:
                 als_results = self.als_recommender.recommend_for_user(
                     self._coerce_user_id(user_id),
                     num_items=top_k,
                 )
-                if self._has_results(als_results) or not has_fallback_input:
-                    return als_results
             except Exception:
-                if not has_fallback_input:
-                    raise
+                als_results = None
 
-        return self._recommend_with_content(item_id=item_id, query=query, top_k=top_k)
+        tfidf_results = None
+        if item_id is not None or (query and query.strip()):
+            try:
+                tfidf_results = self._recommend_with_content(
+                    item_id=item_id, query=query, top_k=top_k,
+                )
+            except Exception:
+                tfidf_results = None
+
+        return self._merge_results(als_results, tfidf_results, top_k)
 
     def has_user_behavior(self, user_id: Optional[int | str]) -> bool:
         """Return True when ALS ratings contain behavior for ``user_id``."""
@@ -107,6 +112,39 @@ class HybridBookRecommender:
         if query and query.strip():
             return self.content_recommender.recommend_by_text(query, top_k=top_k)
         raise ValueError("Cold-start recommendations require item_id or query.")
+
+    @staticmethod
+    def _merge_results(
+        als_results: Any,
+        tfidf_results: Any,
+        top_k: int,
+    ) -> pd.DataFrame:
+        """Merge ALS (priority) and TF-IDF results, deduplicating by book_id."""
+        als_df = pd.DataFrame() if als_results is None else (
+            als_results if isinstance(als_results, pd.DataFrame)
+            else pd.DataFrame(als_results) if als_results else pd.DataFrame()
+        )
+        tfidf_df = pd.DataFrame() if tfidf_results is None else (
+            tfidf_results if isinstance(tfidf_results, pd.DataFrame)
+            else pd.DataFrame(tfidf_results) if tfidf_results else pd.DataFrame()
+        )
+
+        if als_df.empty:
+            return tfidf_df.head(top_k).reset_index(drop=True)
+        if tfidf_df.empty:
+            return als_df.head(top_k).reset_index(drop=True)
+
+        id_col = "book_id" if "book_id" in als_df.columns else (
+            "work_id" if "work_id" in als_df.columns else None
+        )
+        if id_col and id_col in tfidf_df.columns:
+            als_ids = set(als_df[id_col].astype(str))
+            tfidf_unique = tfidf_df[~tfidf_df[id_col].astype(str).isin(als_ids)]
+        else:
+            tfidf_unique = tfidf_df
+
+        combined = pd.concat([als_df, tfidf_unique], ignore_index=True)
+        return combined.head(top_k).reset_index(drop=True)
 
     @staticmethod
     def _has_results(results: Any) -> bool:

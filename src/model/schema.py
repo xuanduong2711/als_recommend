@@ -1,4 +1,4 @@
-"""Pydantic models for transformed book recommendation data."""
+"""Pydantic models for recommendation API payloads."""
 
 from typing import Any, Optional
 
@@ -33,26 +33,41 @@ except ModuleNotFoundError:
             }
 
 
-class Book(BaseModel):
-    """Book metadata from ``data/book_features_dataset``."""
+class RecommendationItem(BaseModel):
+    """Canonical book payload shared by TF-IDF and ALS APIs."""
 
-    work_id: int
-    book_id: Optional[int] = None
-    title: Optional[str] = None
-    book_title: Optional[str] = None
+    book_id: str
     authors: Optional[str] = None
-    author: Optional[str] = None
-    year: Optional[int | str] = None
-    average_rating: Optional[float] = None
-    avg_star: Optional[float] = None
-    total_ratings_count: Optional[int] = None
-    num_rating: Optional[int] = None
+    original_publication_year: Optional[int] = None
+    original_title: Optional[str] = None
+    language_code: Optional[str] = None
+    tags: list[str] = []
+    ratings_1: Optional[int] = None
+    ratings_2: Optional[int] = None
+    ratings_3: Optional[int] = None
+    ratings_4: Optional[int] = None
+    ratings_5: Optional[int] = None
     image_url: Optional[str] = None
-    image_path: Optional[str] = None
-    tags: Optional[str] = None
-    genre: Optional[str] = None
-    score: Optional[float] = None
-    pred_rating: Optional[float] = None
+    small_image_url: Optional[str] = None
+    price: Optional[float] = None
+    mood: Optional[str] = None
+    description: Optional[str] = None
+    longDescription: Optional[str] = None
+    pages: Optional[int] = None
+    readTime: Optional[int] = None
+    status: Optional[str] = None
+    chapters: Optional[int] = None
+    previewText: Optional[str] = None
+    accentColor: Optional[str] = None
+    total_ratings: Optional[int] = None
+    average_rating: Optional[float] = None
+    badges: list[str] = []
+
+
+class PagedRecommendationResponse(BaseModel):
+    """Response envelope used by both recommendation models."""
+
+    items: list[RecommendationItem]
 
 
 class RatingInteraction(BaseModel):
@@ -73,12 +88,8 @@ class RecommendationRequest(BaseModel):
     num_recommendations: Optional[int] = 15
 
 
-class RecommendationResponse(BaseModel):
-    """Response model for book recommendations."""
-
-    books: list[Book]
-    based_on_book: Optional[Book] = None
-    message: Optional[str] = None
+class RecommendationResponse(PagedRecommendationResponse):
+    """Backward-compatible alias for the paginated recommendation response."""
 
 
 class ErrorResponse(BaseModel):
@@ -89,5 +100,6 @@ class ErrorResponse(BaseModel):
 
 
 # Backward-compatible names for older app code.
+Book = RecommendationItem
 Product = Book
 Purchase = RatingInteraction

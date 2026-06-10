@@ -4,6 +4,9 @@
 # Keep this file tracked
 !.gitignore
 !api_plan.md
+!fix_UI.md
+!als.md
+!elas.md
 
 # Keep only requested paths/files
 !requirements.txt
@@ -38,6 +41,19 @@ databases/*
 !databases/MSSQL/**
 !src/
 !src/**
+
+# Frontend source is required by Tailwind v4 source scanning.
+!FrontEnd/
+FrontEnd/*
+!FrontEnd/index.html
+!FrontEnd/package.json
+!FrontEnd/package-lock.json
+!FrontEnd/vite.config.ts
+!FrontEnd/postcss.config.mjs
+!FrontEnd/src/
+!FrontEnd/src/**
+FrontEnd/node_modules/
+FrontEnd/dist/
 
 # Python cache/compiled files
 __pycache__/

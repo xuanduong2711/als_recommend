@@ -116,6 +116,8 @@ def _normalize_book_data(data):
     data['author'] = data['author'].fillna('Không rõ tác giả')
     data['num_rating'] = pd.to_numeric(data['num_rating'], errors='coerce').fillna(0)
     data['avg_star'] = pd.to_numeric(data['avg_star'], errors='coerce')
+    data['price'] = pd.to_numeric(data['price'], errors='coerce')
+    data['num_sold'] = pd.to_numeric(data['num_sold'], errors='coerce')
 
 
     return data
@@ -897,7 +899,7 @@ def _book_entity_from_record(record):
         'image_url': image_url,
         'small_image_url': image_url,
         'price': float(price),
-        'mood': _to_text(record.get('mood')),
+        'mood': _to_text(record.get('mood'), default='[]'),
         'badges': record.get('badges') if isinstance(record.get('badges'), list) else [],
         'description': description,
         'longDescription': long_description,
@@ -907,6 +909,8 @@ def _book_entity_from_record(record):
         'chapters': chapters,
         'previewText': _to_text(record.get('previewText', record.get('preview_text'))),
         'accentColor': _to_text(record.get('accentColor', record.get('accent_color'))),
+        'total_ratings': num_rating,
+        'average_rating': avg_star,
     }
 
 

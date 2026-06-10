@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
 
 from app.api.contracts import ServiceHooks
 from app.api.http_utils import (
@@ -64,35 +63,6 @@ def build_legacy_router(*, services: ServiceHooks, api_version: str) -> APIRoute
         if error:
             return json_error(error, status_code, "not_found")
         return book
-
-    def book_recommendations_payload(book_id: str, request: Request):
-        normalized_book_id, error_response = book_id_path_arg(book_id)
-        if error_response:
-            return error_response
-
-        num, error_response = int_query_arg(request, "num", default=10, minimum=1, maximum=50)
-        if error_response:
-            return error_response
-
-        books, error, status_code = services.get_recommendations_for_book(normalized_book_id, num)
-        if error:
-            code = "not_found" if status_code == 404 else "recommendation_error"
-            message = error if status_code == 404 else "Hệ thống gợi ý đang tạm thời không khả dụng."
-            return json_error(message, status_code, code)
-
-        return {
-            "version": api_version,
-            "book_id": str(normalized_book_id),
-            "results_count": len(books),
-            "books": books,
-        }
-
-    @router.get("/api/ML/{book_id}")
-    async def ml_book_recommendations_api(book_id: str, request: Request):
-        payload = book_recommendations_payload(book_id, request)
-        if isinstance(payload, JSONResponse):
-            return payload
-        return payload.get("books", [])
 
     @router.post("/api/ML/{book_id}")
     async def ml_purchase_recommendations_api(book_id: str, request: Request):

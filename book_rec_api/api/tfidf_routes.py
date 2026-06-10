@@ -1,90 +1,83 @@
 from __future__ import annotations
 
-import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from ..serving import TfidfServingModel
+from .schema import canonical_item
 
-ARTIFACT_PATH = ROOT / "book_rec_api" / "artifacts" / "model_tfidf.pkl"
+
+HERE = Path(__file__).resolve().parent
+ARTIFACT_PATH = (HERE.parent / "artifacts" / "model_tfidf.pkl").resolve()
 
 router = APIRouter()
 
 
-@lru_cache(maxsize=1)
-def _load_tfidf_model() -> Any:
+@lru_cache(maxsize=2)
+def _load_tfidf_model_cached(
+    path_value: str,
+    modified_ns: int,
+    size: int,
+) -> TfidfServingModel:
+    del modified_ns, size
+    return TfidfServingModel.load(path_value)
+
+
+def _load_tfidf_model() -> TfidfServingModel:
     path = ARTIFACT_PATH
     if not path.exists():
         raise HTTPException(
             status_code=503,
-            detail={"code": "service_unavailable", "message": f"TF-IDF artifact not found: {path}"},
+            detail={
+                "code": "service_unavailable",
+                "message": f"TF-IDF artifact not found: {path}",
+            },
         )
-    if path.stat().st_size == 0:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "service_unavailable", "message": "TF-IDF artifact is empty"},
-        )
-    import pickle
-
-    try:
-        with path.open("rb") as f:
-            model = pickle.load(f)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "service_unavailable", "message": f"Failed to load TF-IDF artifact: {exc}"},
-        )
-
-    if not callable(getattr(model, "recommend", None)):
+    stat = path.stat()
+    if stat.st_size == 0:
         raise HTTPException(
             status_code=503,
             detail={
                 "code": "service_unavailable",
-                "message": f"TF-IDF artifact ({type(model).__name__}) has no recommend()",
+                "message": "TF-IDF artifact is empty",
             },
         )
-    return model
-
-
-def _normalize(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    results = []
-    for r in items:
-        item = {
-            "book_id": str(r.get("book_id") or r.get("work_id", "")),
-            "work_id": str(r.get("work_id") or r.get("book_id", "")),
-            "title": r.get("book_title") or r.get("title"),
-            "author": r.get("author") or r.get("authors"),
-        }
-        score = r.get("score")
-        if score is not None:
-            item["score"] = round(float(score), 4)
-        for field in ("image_url", "avg_star", "num_rating"):
-            if field in r and r[field] is not None:
-                item[field] = r[field]
-        results.append(item)
-    return results
+    try:
+        return _load_tfidf_model_cached(
+            str(path),
+            stat.st_mtime_ns,
+            stat.st_size,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "service_unavailable",
+                "message": f"Failed to load TF-IDF artifact: {exc}",
+            },
+        ) from exc
 
 
 @router.get("/recommend/tfidf/{book_id}")
-def recommend_tfidf(book_id: str, limit: int = Query(10, ge=1, le=50)):
+def recommend_tfidf(book_id: UUID, limit: int = Query(10, ge=1, le=50)):
+    book_id_value = str(book_id)
     model = _load_tfidf_model()
     try:
-        recs = model.recommend(book_id, top_k=limit)
+        recs = model.recommend(book_id_value, top_k=limit)
     except KeyError as exc:
         raise HTTPException(
             status_code=404,
             detail={"code": "not_found", "message": str(exc)},
-        )
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=500,
             detail={"code": "internal_error", "message": str(exc)},
-        )
+        ) from exc
+
     rows = recs.to_dict("records") if hasattr(recs, "to_dict") else list(recs)[:limit]
-    items = _normalize(rows)
-    return {"source": "tfidf", "query": {"book_id": book_id, "limit": limit}, "items": items}
+    return [canonical_item(r) for r in rows]
